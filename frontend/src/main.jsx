@@ -136,12 +136,11 @@ function App() {
         <div>
           <div className="eyebrow">
             <Sparkles size={16} />
-            Offline Research Dashboard
+            Post Transaction Fraud Analysis
           </div>
           <h1>UPI Fraud Lab</h1>
           <p>
-            Explore imported transaction data, trace the offline ML workflow, and test
-            supervised and anomaly signals without a final fusion engine.
+            A hybrid machine learning framework for post-facto UPI fraud analysis that combines supervised fraud detection and anomaly detection to identify suspicious and unusual transaction behavior.
           </p>
         </div>
         <StatusPanel status={status} />
@@ -330,7 +329,7 @@ function StatusPanel({ status }) {
       <ShieldCheck size={24} />
       <div>
         <span>Model Status</span>
-        <strong>{ready ? "Ready for testing" : "Training artifacts missing"}</strong>
+        <strong>{ready ? "Ready for Phase 1 testing" : "Training artifacts missing"}</strong>
       </div>
       <div className="artifact-dots">
         {Object.entries(status?.artifacts || {}).map(([key, value]) => (
