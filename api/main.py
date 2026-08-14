@@ -21,6 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.prediction_engine import PredictionEngine  # noqa: E402
+from src.fusion_model import build_transaction_report, fuse_signals  # noqa: E402
 from src.utils import MERGED_DATA_DIR, MODELS_DIR, PROCESSED_DATA_DIR, REPORTS_DIR  # noqa: E402
 
 
@@ -166,10 +167,27 @@ def predict(payload: TransactionRequest) -> dict[str, Any]:
     try:
         prediction = run_model_prediction(engine, transaction)
         diagnostics = build_prediction_diagnostics(engine, transaction, prediction)
+        fusion = fuse_signals(
+            prediction["supervised"],
+            prediction["anomaly"],
+            diagnostics,
+        )
+        report = build_transaction_report(
+            transaction,
+            prediction["supervised"],
+            prediction["anomaly"],
+            fusion,
+            diagnostics,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    return {**prediction, "diagnostics": diagnostics}
+    return {
+        **prediction,
+        "diagnostics": diagnostics,
+        "fusion": fusion,
+        "report": report,
+    }
 
 
 def run_model_prediction(engine: PredictionEngine, transaction: dict[str, Any]) -> dict[str, Any]:
@@ -189,6 +207,8 @@ def run_model_prediction(engine: PredictionEngine, transaction: dict[str, Any]) 
             "anomaly_score": float(anomaly["anomaly_score"]),
             "anomaly_label": str(anomaly["anomaly_label"]),
             "anomaly_confidence": calibrated_confidence,
+            "anomaly_percentile": calibrated_confidence,
+            "calibration_method": "training-score percentile",
         },
     }
 
@@ -289,10 +309,14 @@ def get_dataset_analytics() -> dict[str, Any]:
         "10k-50k": 0,
         "50k+": 0,
     }
+    all_amounts: list[np.ndarray] = []
+    all_labels: list[np.ndarray] = []
 
     for chunk in pd.read_csv(data_path, usecols=usecols, chunksize=250_000):
         total_rows += len(chunk)
         amount = pd.to_numeric(chunk["amount"], errors="coerce").fillna(0)
+        all_amounts.append(amount.to_numpy(dtype=np.float64, copy=True))
+        all_labels.append(chunk["fraud_label"].fillna(0).to_numpy(dtype=np.int8, copy=True))
         amount_sum += float(amount.sum())
         current_min = float(amount.min()) if len(amount) else 0.0
         current_max = float(amount.max()) if len(amount) else 0.0
@@ -315,6 +339,7 @@ def get_dataset_analytics() -> dict[str, Any]:
     fraud_count = fraud_counts.get("1", 0)
     legitimate_count = fraud_counts.get("0", 0)
     average_amount = amount_sum / total_rows if total_rows else 0.0
+    transaction_distribution = build_transaction_distribution(all_amounts, all_labels)
 
     return {
         "ready": True,
@@ -333,7 +358,94 @@ def get_dataset_analytics() -> dict[str, Any]:
         "locations": _top_items(location_counts, limit=8),
         "hourly_volume": [{"label": hour, "value": hour_counts[str(hour)]} for hour in range(24)],
         "amount_bins": [{"label": label, "value": value} for label, value in amount_bins.items()],
+        "transaction_distribution": transaction_distribution,
         "reports": sorted(path.name for path in REPORTS_DIR.glob("*.png")),
+    }
+
+
+def build_transaction_distribution(
+    amount_chunks: list[np.ndarray],
+    label_chunks: list[np.ndarray],
+    bin_count: int = 40,
+) -> dict[str, Any]:
+    """Summarize every imported transaction for the report distribution chart.
+
+    The chart is count-preserving: the sum of all bins equals the imported row
+    count. Quantile-based bins keep the visual useful even when a few payments
+    are much larger than the rest. The interquartile range is shown as the grey
+    review band, with lower and upper tails shown in green and red.
+    """
+    if not amount_chunks:
+        return {"ready": False, "bins": []}
+
+    amounts = np.concatenate(amount_chunks)
+    labels = np.concatenate(label_chunks).astype(np.int8, copy=False)
+    amounts = np.nan_to_num(amounts, nan=0.0, posinf=0.0, neginf=0.0)
+    if amounts.size == 0:
+        return {"ready": False, "bins": []}
+
+    median = float(np.median(amounts))
+    first_quartile, third_quartile = np.percentile(amounts, [25, 75])
+    first_quartile = float(first_quartile)
+    third_quartile = float(third_quartile)
+    minimum = float(amounts.min())
+    maximum = float(amounts.max())
+    sorted_amounts = np.sort(amounts)
+    plot_size = min(1200, sorted_amounts.size)
+    plot_indexes = np.unique(np.linspace(0, sorted_amounts.size - 1, plot_size).astype(int))
+    quantile_edges = np.quantile(amounts, np.linspace(0.0, 1.0, bin_count + 1))
+    edges = np.unique(quantile_edges)
+
+    if len(edges) < 2:
+        edges = np.array([minimum, maximum + 1.0], dtype=np.float64)
+
+    bin_indexes = np.clip(np.searchsorted(edges, amounts, side="right") - 1, 0, len(edges) - 2)
+    bins = []
+    for index in range(len(edges) - 1):
+        mask = bin_indexes == index
+        left = float(edges[index])
+        right = float(edges[index + 1])
+        total = int(mask.sum())
+        fraud = int(np.count_nonzero(labels[mask] == 1))
+        if right <= first_quartile:
+            zone = "legitimate_zone"
+        elif left >= third_quartile:
+            zone = "fraud_zone"
+        else:
+            zone = "grey_zone"
+        bins.append(
+            {
+                "index": index,
+                "label": f"{left:,.0f} - {right:,.0f}",
+                "start": left,
+                "end": right,
+                "center": (left + right) / 2.0,
+                "total": total,
+                "legitimate": total - fraud,
+                "fraud": fraud,
+                "zone": zone,
+            }
+        )
+
+    return {
+        "ready": True,
+        "metric": "transaction amount",
+        "total_transactions": int(amounts.size),
+        "minimum": minimum,
+        "maximum": maximum,
+        "median": median,
+        "grey_area_low": first_quartile,
+        "grey_area_high": third_quartile,
+        "line_points": [
+            {
+                "rank": int(index + 1),
+                "amount": float(sorted_amounts[index]),
+            }
+            for index in plot_indexes
+        ],
+        "line_point_count": int(len(plot_indexes)),
+        "line_represents_transactions": int(sorted_amounts.size),
+        "bins": bins,
     }
 
 
@@ -344,7 +456,7 @@ def get_anomaly_reference_scores() -> np.ndarray:
         path = PROCESSED_DATA_DIR / filename
         if path.exists():
             scores = pd.read_csv(path, usecols=["anomaly_score"])["anomaly_score"]
-            return pd.to_numeric(scores, errors="coerce").dropna().to_numpy()
+            return np.sort(pd.to_numeric(scores, errors="coerce").dropna().to_numpy())
     return np.array([])
 
 
@@ -353,7 +465,7 @@ def calibrate_anomaly_confidence(score: float) -> float:
     reference = get_anomaly_reference_scores()
     if reference.size == 0:
         return 0.0
-    percentile = float(np.searchsorted(np.sort(reference), score, side="right") / reference.size)
+    percentile = float(np.searchsorted(reference, score, side="right") / reference.size)
     return max(0.0, min(1.0, percentile))
 
 

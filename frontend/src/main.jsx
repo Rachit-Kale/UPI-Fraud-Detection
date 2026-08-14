@@ -7,15 +7,21 @@ import {
   BarChart3,
   Blocks,
   Clock3,
+  ChevronRight,
   Cpu,
   Database,
+  Download,
+  FileText,
   GitBranch,
   Gauge,
   Layers3,
+  ListChecks,
+  LineChart,
   MapPin,
   Network,
   Radar,
   RefreshCw,
+  Search,
   ShieldCheck,
   Sparkles,
   WalletCards,
@@ -42,6 +48,7 @@ function App() {
   const [presets, setPresets] = useState([]);
   const [analytics, setAnalytics] = useState(null);
   const [result, setResult] = useState(null);
+  const [selectedLog, setSelectedLog] = useState(null);
   const [logs, setLogs] = useState(() => {
     const saved = localStorage.getItem("upi_prediction_logs");
     return saved ? JSON.parse(saved) : [];
@@ -68,7 +75,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem("upi_prediction_logs", JSON.stringify(logs.slice(0, 10)));
+    localStorage.setItem("upi_prediction_logs", JSON.stringify(logs.slice(0, 25)));
   }, [logs]);
 
   function updateField(field, value) {
@@ -111,18 +118,24 @@ function App() {
         throw new Error(data.detail || "Prediction failed.");
       }
       setResult(data);
-      setLogs((current) => [
-        {
-          time: new Date().toLocaleTimeString(),
-          amount: Number(form.amount),
-          type: form.transaction_type,
-          fraud: data.supervised.fraud_probability,
-          anomaly: data.anomaly.anomaly_score,
-          confidence: data.anomaly.anomaly_confidence,
-          label: data.anomaly.anomaly_label,
-        },
-        ...current,
-      ]);
+      const logEntry = {
+        id: data.report?.transaction?.transaction_id || data.transaction_id,
+        time: new Date().toLocaleTimeString(),
+        amount: Number(form.amount),
+        type: form.transaction_type,
+        fraud: data.supervised.fraud_probability,
+        anomaly: data.anomaly.anomaly_score,
+        confidence: data.anomaly.anomaly_confidence,
+        label: data.anomaly.anomaly_label,
+        resolution: data.fusion?.resolution,
+        transaction: data.report?.transaction || { ...form, amount: Number(form.amount) },
+        supervised: data.supervised,
+        anomalyOutput: data.anomaly,
+        fusion: data.fusion,
+        report: data.report,
+      };
+      setSelectedLog(logEntry);
+      setLogs((current) => [logEntry, ...current.filter((item) => item.id !== logEntry.id)]);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -150,6 +163,8 @@ function App() {
         <TabButton active={page === "simulation"} icon={<Radar size={18} />} label="Simulation" onClick={() => setPage("simulation")} />
         <TabButton active={page === "workflow"} icon={<GitBranch size={18} />} label="Workflow" onClick={() => setPage("workflow")} />
         <TabButton active={page === "analytics"} icon={<BarChart3 size={18} />} label="Analytics" onClick={() => setPage("analytics")} />
+        <TabButton active={page === "report"} icon={<FileText size={18} />} label="Finance Report" onClick={() => setPage("report")} />
+        <TabButton active={page === "logs"} icon={<ListChecks size={18} />} label="Prediction Logs" onClick={() => setPage("logs")} />
       </nav>
 
       {error && (
@@ -173,11 +188,13 @@ function App() {
       )}
       {page === "workflow" && <WorkflowPage />}
       {page === "analytics" && <AnalyticsPage analytics={analytics} />}
+      {page === "report" && <FinanceResearchReportPage report={result?.report || selectedLog?.report} analytics={analytics} />}
+      {page === "logs" && <PredictionLogsPage logs={logs} selectedLog={selectedLog} onSelect={setSelectedLog} />}
     </main>
   );
 }
 
-function SimulationPage({ form, result, logs, loading, presets, updateField, applyPreset, runPrediction }) {
+function SimulationPage({ form, result, loading, presets, updateField, applyPreset, runPrediction }) {
   const fraudProbability = result?.supervised?.fraud_probability ?? 0;
   const anomalyConfidence = result?.anomaly?.anomaly_confidence ?? 0;
 
@@ -209,7 +226,8 @@ function SimulationPage({ form, result, logs, loading, presets, updateField, app
         </div>
       </form>
 
-      <section className="result-panel">
+      <section className="result-column">
+        <section className="result-panel">
         <div className="panel-head">
           <div>
             <span>Model Outputs</span>
@@ -225,8 +243,23 @@ function SimulationPage({ form, result, logs, loading, presets, updateField, app
 
         <ComparisonChart amount={Number(form.amount)} fraudProbability={fraudProbability} anomalyConfidence={anomalyConfidence} />
         <EvidencePanel diagnostics={result?.diagnostics} />
-        <LogTable logs={logs} />
+        <FusionResolution fusion={result?.fusion} />
+        <CompactTransactionReport report={result?.report} />
+        </section>
       </section>
+    </section>
+  );
+}
+
+function FinanceResearchReportPage({ report, analytics }) {
+  return (
+    <section className="finance-report-page">
+      <div className="section-head report-page-heading">
+        <span>One-page analysis summary</span>
+        <h2>Finance Research Report</h2>
+        <p>Trace how the submitted transaction moved through preprocessing, model scoring, evidence checks, and the final research resolution.</p>
+      </div>
+      <FullReportPanel report={report} analytics={analytics} />
     </section>
   );
 }
@@ -239,7 +272,8 @@ function WorkflowPage() {
     ["Feature Engineering", "Behavioral, velocity, risk, and temporal signals are generated offline.", Activity],
     ["Supervised Models", "XGBoost and Random Forest produce fraud probability scores.", ShieldCheck],
     ["Anomaly Models", "Isolation Forest and LOF produce separate anomaly scores.", Network],
-    ["Dashboard Testing", "Manual transactions compare both model families without risk fusion.", Gauge],
+    ["Research Fusion", "A weighted score retains both signals while disagreement and uncertainty identify ambiguous review cases.", GitBranch],
+    ["Transaction Report", "The dashboard produces a transparent, downloadable post-transaction research report.", FileText],
   ];
 
   return (
@@ -260,9 +294,9 @@ function WorkflowPage() {
         ))}
       </div>
       <div className="workflow-band">
-        <MetricTile label="Current scope" value="2 model families" />
-        <MetricTile label="Output style" value="Separate signals" />
-        <MetricTile label="Fusion engine" value="Not implemented" />
+        <MetricTile label="Model families" value="2 independent signals" />
+        <MetricTile label="Fusion method" value="Transparent scoring" />
+        <MetricTile label="Final band" value="Ambiguous review" />
       </div>
     </section>
   );
@@ -480,23 +514,343 @@ function EvidencePanel({ diagnostics }) {
   );
 }
 
-function LogTable({ logs }) {
+function FusionResolution({ fusion }) {
+  if (!fusion) {
+    return (
+      <div className="fusion-panel waiting">
+        <div className="mini-title"><GitBranch size={17} /> Research Resolution</div>
+        <p>Run a transaction to calculate the fusion score and ambiguity band.</p>
+      </div>
+    );
+  }
+
+  const tone = resolutionTone(fusion.resolution);
   return (
-    <div className="logs">
-      <div className="mini-title">Prediction Logs</div>
-      {logs.length === 0 ? (
-        <p>No prediction runs yet.</p>
-      ) : (
-        logs.map((log, index) => (
-          <div className="log-row" key={`${log.time}-${index}`}>
-            <span>{log.time}</span>
-            <strong>{log.type}</strong>
-            <em>{formatPercent(log.fraud)}</em>
-            <small>{log.label}</small>
+    <section className={`fusion-panel ${tone}`}>
+      <div className="fusion-head">
+        <div>
+          <div className="mini-title"><GitBranch size={17} /> Research Resolution</div>
+          <h3>{formatResolution(fusion.resolution)}</h3>
+          <p>{fusion.resolution_text}</p>
+        </div>
+        <span className="resolution-badge">{formatPercent(fusion.ambiguity_score)} ambiguity</span>
+      </div>
+      <div className="fusion-metrics">
+        <MetricReadout label="Fusion score" value={formatPercent(fusion.fusion_score)} />
+        <MetricReadout label="Signal disagreement" value={formatPercent(fusion.signal_disagreement)} />
+        <MetricReadout label="Supervised uncertainty" value={formatPercent(fusion.supervised_uncertainty)} />
+      </div>
+      <small>Research output only. It does not approve, decline, block, or prove fraud for a transaction.</small>
+    </section>
+  );
+}
+
+function FullReportPanel({ report, analytics }) {
+  if (!report) {
+    return (
+      <section className="full-report-panel report-waiting">
+        <div className="report-head">
+          <div>
+            <div className="mini-title"><FileText size={17} /> Finance Research Report</div>
+            <h2>Report Waiting</h2>
+            <p>Run a transaction to generate the full post-transaction report and population comparison.</p>
           </div>
-        ))
-      )}
-    </div>
+          <LineChart size={28} />
+        </div>
+      </section>
+    );
+  }
+
+  const transaction = report.transaction || {};
+  const fusion = report.fusion_resolution || {};
+  const supervised = report.supervised_model_output || {};
+  const anomaly = report.unsupervised_model_output || {};
+
+  return (
+    <section className="full-report-panel">
+      <div className="report-head">
+        <div>
+          <div className="mini-title"><FileText size={17} /> Finance Research Report</div>
+          <h2>{formatResolution(fusion.resolution)}</h2>
+          <p>Post-transaction analysis record for {transaction.transaction_id || "this transaction"}.</p>
+          <p className="report-resolution-text">{fusion.resolution_text}</p>
+        </div>
+        <button type="button" className="download-button" onClick={() => downloadJsonReport(report)}>
+          <Download size={16} /> Download Report
+        </button>
+      </div>
+
+      <div className="report-score-strip">
+        <ReportItem label="Final resolution" value={formatResolution(fusion.resolution)} />
+        <ReportItem label="Fusion score" value={formatPercent(fusion.fusion_score)} />
+        <ReportItem label="Ambiguity score" value={formatPercent(fusion.ambiguity_score)} />
+      </div>
+
+      <div className="full-report-grid">
+        <ReportSection title="Transaction details">
+          <ReportItem label="Amount" value={currency(transaction.amount)} />
+          <ReportItem label="Transaction type" value={transaction.transaction_type} />
+          <ReportItem label="Sender" value={transaction.sender_id} />
+          <ReportItem label="Receiver" value={transaction.receiver_id} />
+          <ReportItem label="Device" value={transaction.device_type} />
+          <ReportItem label="Location" value={transaction.location} />
+          <ReportItem label="Merchant" value={transaction.merchant_category} />
+          <ReportItem label="Timestamp" value={formatTimestamp(transaction.timestamp)} />
+        </ReportSection>
+        <ReportSection title="Model evidence">
+          <ReportItem label="Fraud probability" value={formatPercent(supervised.fraud_probability)} />
+          <ReportItem label="Fraud prediction" value={supervised.fraud_prediction ? "Fraud signal" : "Legitimate signal"} />
+          <ReportItem label="Unusualness percentile" value={formatPercent(anomaly.anomaly_percentile)} />
+          <ReportItem label="Raw anomaly score" value={Number(anomaly.anomaly_score || 0).toFixed(4)} />
+          <ReportItem label="Signal disagreement" value={formatPercent(fusion.signal_disagreement)} />
+          <ReportItem label="Supervised uncertainty" value={formatPercent(fusion.supervised_uncertainty)} />
+        </ReportSection>
+      </div>
+
+      <ReportSection title="Research method and scope">
+        <ReportItem label="Analysis scope" value={report.analysis_scope} />
+        <ReportItem label="Generated at" value={formatTimestamp(report.generated_at_utc)} />
+        <ReportItem label="Fusion method" value={fusion.method} />
+        <ReportItem label="Supervised weight" value={formatPercent(fusion.weights?.supervised_fraud_probability)} />
+        <ReportItem label="Unsupervised weight" value={formatPercent(fusion.weights?.unsupervised_unusualness_percentile)} />
+        <ReportItem label="Calibration" value={anomaly.calibration_method} />
+      </ReportSection>
+
+      <TransactionDistributionChart
+        distribution={analytics?.transaction_distribution && {
+          ...analytics.transaction_distribution,
+          input_amount: transaction.amount,
+        }}
+      />
+      <ReportEvidenceTable evidence={report.model_evidence} />
+      <p className="report-disclaimer">Research interpretation only. This report does not approve, decline, block, or prove fraud.</p>
+    </section>
+  );
+}
+
+function CompactTransactionReport({ report }) {
+  if (!report) return null;
+  const transaction = report.transaction || {};
+  const fusion = report.fusion_resolution || {};
+  return (
+    <section className="compact-report">
+      <div className="mini-title"><FileText size={17} /> Resolution Summary</div>
+      <div className="report-grid compact">
+        <ReportItem label="Resolution" value={formatResolution(fusion.resolution)} />
+        <ReportItem label="Fusion score" value={formatPercent(fusion.fusion_score)} />
+        <ReportItem label="Transaction" value={transaction.transaction_id} />
+        <ReportItem label="Amount" value={currency(transaction.amount)} />
+      </div>
+    </section>
+  );
+}
+
+function ReportSection({ title, children }) {
+  return (
+    <section className="report-section">
+      <h3>{title}</h3>
+      <div className="report-grid">{children}</div>
+    </section>
+  );
+}
+
+function TransactionDistributionChart({ distribution }) {
+  if (!distribution?.ready) {
+    return <div className="distribution-empty">Population distribution is available after imported-data analytics are ready.</div>;
+  }
+
+  const points = distribution.line_points || [];
+  const amountRange = Math.max(distribution.maximum - distribution.minimum, 1);
+  const toY = (amount) => 150 - (((amount - distribution.minimum) / amountRange) * 130);
+  const toX = (index) => points.length <= 1 ? 50 : (index / (points.length - 1)) * 100;
+  const linePoints = points.map((item, index) => `${toX(index)},${toY(item.amount)}`).join(" ");
+  const medianY = toY(distribution.median);
+  const greyTop = toY(distribution.grey_area_high);
+  const greyHeight = Math.max(0, toY(distribution.grey_area_low) - greyTop);
+  const inputAmount = Number(distribution.input_amount);
+  const nearestIndex = Number.isFinite(inputAmount) && points.length
+    ? points.reduce((closest, item, index) => Math.abs(item.amount - inputAmount) < Math.abs(points[closest].amount - inputAmount) ? index : closest, 0)
+    : null;
+  const inputX = nearestIndex === null ? null : toX(nearestIndex);
+  const inputY = nearestIndex === null ? null : toY(points[nearestIndex].amount);
+
+  return (
+    <section className="distribution-section">
+      <div className="report-section-head">
+        <div>
+          <div className="mini-title"><LineChart size={17} /> Population comparison</div>
+          <h3>All imported transactions by amount rank</h3>
+          <p>{compactNumber(distribution.line_represents_transactions)} transactions shape this ranked line. The visible line is decimated for browser performance.</p>
+        </div>
+        <div className="distribution-stats">
+          <span>Median <strong>{currency(distribution.median)}</strong></span>
+          <span>Grey band <strong>{currency(distribution.grey_area_low)} - {currency(distribution.grey_area_high)}</strong></span>
+        </div>
+      </div>
+      <div className="line-chart-wrap">
+        <div className="line-chart-axis y-axis"><span>{currency(distribution.maximum)}</span><span>{currency(distribution.median)}</span><span>{currency(distribution.minimum)}</span></div>
+        <svg className="transaction-line-chart" viewBox="0 0 100 160" preserveAspectRatio="none" role="img" aria-label="Ranked transaction amounts with median and grey area">
+          <defs>
+            <linearGradient id="transactionLineGradient" x1="0" x2="0" y1="1" y2="0">
+              <stop offset="0%" stopColor="#128a70" />
+              <stop offset={`${clampPercent(((distribution.grey_area_low - distribution.minimum) / amountRange) * 100)}%`} stopColor="#128a70" />
+              <stop offset={`${clampPercent(((distribution.grey_area_high - distribution.minimum) / amountRange) * 100)}%`} stopColor="#737d78" />
+              <stop offset="100%" stopColor="#d84a3a" />
+            </linearGradient>
+          </defs>
+          <rect x="0" y={greyTop} width="100" height={greyHeight} className="line-grey-area" />
+          <line x1="0" x2="100" y1={medianY} y2={medianY} className="line-median" />
+          <polyline points={linePoints} className="transaction-polyline" stroke="url(#transactionLineGradient)" />
+          {inputX !== null && (
+            <g>
+              <circle cx={inputX} cy={inputY} r="2" className="line-input-marker" />
+              <text x={Math.min(inputX + 2, 82)} y={Math.max(inputY - 4, 8)} className="line-input-label">Tested input</text>
+            </g>
+          )}
+        </svg>
+        <div className="line-chart-axis x-axis"><span>Lowest amount</span><span>Transaction rank</span><span>Highest amount</span></div>
+      </div>
+      <div className="distribution-legend">
+        <span><i className="legend-green" /> Lower amount zone</span>
+        <span><i className="legend-grey" /> Grey review band</span>
+        <span><i className="legend-red" /> Upper amount zone</span>
+        <span><i className="legend-input" /> Tested input</span>
+      </div>
+    </section>
+  );
+}
+
+function ReportEvidenceTable({ evidence }) {
+  const sensitivity = evidence?.sensitivity || [];
+  if (!sensitivity.length) return null;
+  return (
+    <section className="report-section evidence-table-section">
+      <h3>Input sensitivity evidence</h3>
+      <div className="report-evidence-table">
+        <div className="report-evidence-row report-evidence-header"><strong>Controlled variation</strong><strong>Fraud delta</strong><strong>Unusualness delta</strong></div>
+        {sensitivity.map((item) => (
+          <div className="report-evidence-row" key={item.name}>
+            <span>{item.name}</span>
+            <b>{formatSignedPercent(item.fraud_delta)}</b>
+            <b>{formatSignedPercent(item.anomaly_delta)}</b>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function downloadJsonReport(report) {
+  const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `${report.transaction?.transaction_id || "transaction"}_research_report.json`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function MetricReadout({ label, value }) {
+  return <span><small>{label}</small><strong>{value}</strong></span>;
+}
+
+function ReportItem({ label, value }) {
+  return <span><small>{label}</small><strong>{value ?? "Not available"}</strong></span>;
+}
+
+function PredictionLogsPage({ logs, selectedLog, onSelect }) {
+  const activeLog = selectedLog || logs[0];
+
+  return (
+    <section className="logs-page">
+      <div className="section-head">
+        <span>Audit Trail</span>
+        <h2>Prediction Logs</h2>
+      </div>
+      <div className="logs-layout">
+        <section className="log-list-panel">
+          <div className="log-list-head">
+            <div className="mini-title"><ListChecks size={17} /> Stored transactions</div>
+            <span>{logs.length} saved</span>
+          </div>
+          {logs.length === 0 ? (
+            <p className="muted">No prediction runs yet. Submit a transaction from Simulation.</p>
+          ) : (
+            <div className="log-list">
+              {logs.map((log) => (
+                <button type="button" className={`log-list-item ${activeLog?.id === log.id ? "selected" : ""}`} key={log.id || log.time} onClick={() => onSelect(log)}>
+                  <span>
+                    <strong>{log.type}</strong>
+                    <small>{log.time} · {currency(log.amount)}</small>
+                  </span>
+                  <span className="log-list-score">
+                    <b>{formatPercent(log.fraud)}</b>
+                    <small>{formatResolution(log.resolution) || log.label}</small>
+                  </span>
+                  <ChevronRight size={17} />
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <LogDetail log={activeLog} />
+      </div>
+    </section>
+  );
+}
+
+function LogDetail({ log }) {
+  if (!log) {
+    return (
+      <section className="log-detail-panel log-detail-empty">
+        <Search size={28} />
+        <h3>Select a prediction</h3>
+        <p>Click a saved transaction to inspect its input fields and model response.</p>
+      </section>
+    );
+  }
+
+  const transaction = log.transaction || {};
+  const supervised = log.supervised || {};
+  const anomaly = log.anomalyOutput || {};
+  const fusion = log.fusion || {};
+  return (
+    <section className="log-detail-panel">
+      <div className="log-detail-head">
+        <div>
+          <div className="mini-title"><FileText size={17} /> Transaction detail</div>
+          <h2>{transaction.transaction_id || log.id}</h2>
+          <p>{formatTimestamp(transaction.timestamp)} · {transaction.transaction_type}</p>
+        </div>
+        {log.report && (
+          <button type="button" className="download-button" onClick={() => downloadJsonReport(log.report)}>
+            <Download size={16} /> Download
+          </button>
+        )}
+      </div>
+      <div className="log-detail-scores">
+        <ReportItem label="Resolution" value={formatResolution(fusion.resolution)} />
+        <ReportItem label="Fusion score" value={formatPercent(fusion.fusion_score)} />
+        <ReportItem label="Ambiguity score" value={formatPercent(fusion.ambiguity_score)} />
+      </div>
+      <ReportSection title="Submitted transaction">
+        <ReportItem label="Amount" value={currency(transaction.amount)} />
+        <ReportItem label="Sender" value={transaction.sender_id} />
+        <ReportItem label="Receiver" value={transaction.receiver_id} />
+        <ReportItem label="Device" value={transaction.device_type} />
+        <ReportItem label="Merchant" value={transaction.merchant_category} />
+        <ReportItem label="Location" value={transaction.location} />
+      </ReportSection>
+      <ReportSection title="Model response">
+        <ReportItem label="Fraud probability" value={formatPercent(supervised.fraud_probability)} />
+        <ReportItem label="Fraud output" value={supervised.fraud_prediction ? "Fraud signal" : "Legitimate signal"} />
+        <ReportItem label="Anomaly score" value={Number(anomaly.anomaly_score || 0).toFixed(4)} />
+        <ReportItem label="Unusualness percentile" value={formatPercent(anomaly.anomaly_percentile ?? anomaly.anomaly_confidence)} />
+        <ReportItem label="Model label" value={anomaly.anomaly_label} />
+        <ReportItem label="Logged at" value={log.time} />
+      </ReportSection>
+    </section>
   );
 }
 
@@ -564,7 +918,24 @@ function DonutChart({ fraud, legitimate }) {
 }
 
 function formatPercent(value) {
-  return `${(value * 100).toFixed(1)}%`;
+  const numericValue = Number(value);
+  return `${((Number.isFinite(numericValue) ? numericValue : 0) * 100).toFixed(1)}%`;
+}
+
+function formatResolution(value) {
+  return value ? value.replaceAll("_", " ") : "";
+}
+
+function resolutionTone(value) {
+  if (value === "AMBIGUOUS_REVIEW") return "ambiguous";
+  if (value === "FRAUD_LIKELY") return "elevated";
+  return "legitimate";
+}
+
+function formatTimestamp(value) {
+  if (!value) return "Not available";
+  const timestamp = new Date(value);
+  return Number.isNaN(timestamp.getTime()) ? String(value) : timestamp.toLocaleString();
 }
 
 function formatSignedPercent(value) {

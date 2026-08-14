@@ -9,10 +9,14 @@ The current implementation covers:
 - Feature engineering
 - Supervised fraud detection with XGBoost and Random Forest
 - Unsupervised anomaly detection with Isolation Forest and Local Outlier Factor
-- Streamlit testing dashboard for manually checking model behavior
+- Local Vite React testing dashboard for manually checking model behavior
+- Explainable research fusion score and downloadable transaction report
+- Finance-style transaction report with population distribution and median grey band
+- Clickable browser-persisted prediction logs with transaction detail views
+- Dedicated Finance Research Report page with ranked transaction line graph and tested-input marker
 
-The project intentionally does not implement real-time streaming, APIs, banking integration,
-authentication, production deployment, hybrid risk fusion, or a final grey-area decision engine.
+The project intentionally does not implement real-time streaming, banking integration,
+authentication, or production deployment. The local API supports only the React testing UI.
 
 ## Datasets
 
@@ -62,14 +66,13 @@ The pipeline discovers supported dataset files in `data/raw/`, maps them into th
 common schema, preprocesses them, engineers features, trains supervised models, and
 trains anomaly detection models.
 
-## Streamlit Testing Dashboard
+## Streamlit Testing Dashboard (Optional)
 
 ```bash
 streamlit run app/app.py
 ```
 
-The dashboard is a local testing interface only. It lets you enter or select a sample
-transaction, then displays supervised and unsupervised model outputs separately.
+This legacy local testing interface displays supervised and unsupervised outputs separately.
 
 ## Vite React Testing Dashboard
 
@@ -97,6 +100,9 @@ http://localhost:5173
 ```
 
 The API is local-only and is used only for manual offline model testing.
+The React dashboard additionally presents an explainable fusion score and a downloadable
+transaction report. Its resolution can be `LIKELY_LEGITIMATE`, `FRAUD_LIKELY`, or
+`AMBIGUOUS_REVIEW`; it is a research interpretation, not a payment decision.
 
 ## Common Schema
 
@@ -115,5 +121,7 @@ Every dataset is mapped into:
 
 ## Important Boundary
 
-This project stops at supervised fraud detection and unsupervised anomaly detection.
-It does not combine both outputs into a final grey-area or risk-fusion decision.
+The fusion layer is deliberately transparent rather than a third opaque classifier. It uses
+a weighted dual-signal score plus model disagreement and supervised uncertainty to identify
+transactions that belong in an ambiguous research-review band. It does not approve, decline,
+block, or prove fraud for a transaction.
