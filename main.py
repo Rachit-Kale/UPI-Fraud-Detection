@@ -8,18 +8,21 @@ import sys
 from pathlib import Path
 
 from src.anomaly_detection import train_anomaly_models
-from src.data_loader import generate_schema_reports, load_all_datasets, load_and_map_all
-from src.data_preprocessing import PreprocessingConfig, UPITransactionPreprocessor
-from src.feature_engineering import engineer_features
-from src.sampling import balanced_binary_sample
+from src.parquet_pipeline import (
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_FIT_ROWS,
+    MAPPED_PARQUET_PATH,
+    PROCESSED_FEATURES_PARQUET_PATH,
+    ParquetPipelineConfig,
+    sample_parquet_rows,
+    stream_preprocess_to_parquet,
+    write_mapped_parquet,
+)
 from src.supervised_model import train_supervised_models
 from src.utils import (
-    MERGED_DATA_DIR,
-    PROCESSED_DATA_DIR,
     PROJECT_ROOT,
     REPORTS_DIR,
     ensure_project_dirs,
-    save_dataframe,
     save_joblib,
 )
 
@@ -33,6 +36,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--features", action="store_true", help="Run feature engineering")
     parser.add_argument("--train-supervised", action="store_true", help="Train supervised models")
     parser.add_argument("--train-anomaly", action="store_true", help="Train anomaly models")
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=DEFAULT_CHUNK_SIZE,
+        help=f"Rows per Parquet/CSV processing chunk (default: {DEFAULT_CHUNK_SIZE})",
+    )
+    parser.add_argument(
+        "--fit-rows",
+        type=int,
+        default=DEFAULT_FIT_ROWS,
+        help=f"Bounded rows used to fit preprocessing state (default: {DEFAULT_FIT_ROWS})",
+    )
+    parser.add_argument(
+        "--supervised-rows",
+        type=int,
+        default=500_000,
+        help="Bounded balanced rows for supervised batch training",
+    )
+    parser.add_argument(
+        "--anomaly-rows",
+        type=int,
+        default=200_000,
+        help="Bounded stratified rows for anomaly batch training",
+    )
+    parser.add_argument(
+        "--mapped-parquet",
+        type=Path,
+        default=MAPPED_PARQUET_PATH,
+        help="Output path for the unified mapped Parquet file",
+    )
     return parser.parse_args()
 
 
@@ -51,58 +84,131 @@ def main() -> int:
         ]
     )
 
-    mapped = None
-    engineered = None
+    config = ParquetPipelineConfig(
+        chunk_size=args.chunk_size,
+        fit_rows=args.fit_rows,
+        mapped_path=args.mapped_parquet,
+        processed_path=PROCESSED_FEATURES_PARQUET_PATH,
+    )
+
+    mapped_path = config.mapped_path
+    preprocessor = None
+
+    def ensure_mapped_parquet() -> Path:
+        if not mapped_path.exists():
+            print("Creating unified compressed Parquet dataset...")
+            stats = write_mapped_parquet(
+                raw_dir=PROJECT_ROOT / "data" / "raw",
+                output_path=mapped_path,
+                chunk_size=config.chunk_size,
+                compression=config.compression,
+            )
+            print(f"Mapped Parquet: {stats['rows']} rows in {stats['chunks']} chunks")
+        return mapped_path
+
+    def ensure_processed_parquet() -> Path:
+        nonlocal preprocessor
+        ensure_mapped_parquet()
+        if preprocessor is None or not config.processed_path.exists():
+            preprocessor, stats = stream_preprocess_to_parquet(
+                mapped_parquet_path=mapped_path,
+                output_path=config.processed_path,
+                preprocessor=preprocessor,
+                fit_rows=config.fit_rows,
+                chunk_size=config.chunk_size,
+            )
+            save_joblib(preprocessor, PROJECT_ROOT / "models" / "preprocessor.pkl")
+            save_joblib(preprocessor, PROJECT_ROOT / "models" / "scaler.pkl")
+            print(f"Processed Parquet: {stats['rows']} rows in {stats['chunks']} chunks")
+        return config.processed_path
 
     if run_all or args.load:
-        print("Stage 1/5: Loading datasets and generating schema reports...")
-        datasets = load_all_datasets()
-        reports = generate_schema_reports(datasets)
+        print("Stage 1/5: Converting raw datasets to compressed Parquet chunks...")
+        stats = write_mapped_parquet(
+            raw_dir=PROJECT_ROOT / "data" / "raw",
+            output_path=mapped_path,
+            chunk_size=config.chunk_size,
+            compression=config.compression,
+        )
+        reports = {
+            "mapped_parquet": {
+                "path": str(mapped_path),
+                "row_count": stats["rows"],
+                "chunk_count": stats["chunks"],
+                "columns": [
+                    "transaction_id",
+                    "timestamp",
+                    "amount",
+                    "sender_id",
+                    "receiver_id",
+                    "device_type",
+                    "merchant_category",
+                    "location",
+                    "transaction_type",
+                    "fraud_label",
+                ],
+                "compression": config.compression,
+                "chunk_size": config.chunk_size,
+            }
+        }
         schema_report_path = REPORTS_DIR / "schema_reports.json"
         schema_report_path.write_text(json.dumps(reports, indent=2), encoding="utf-8")
-        mapped = load_and_map_all()
-        save_dataframe(mapped, MERGED_DATA_DIR / "merged_common_schema.csv")
 
-    if run_all or args.preprocess:
-        print("Stage 2/5: Preprocessing mapped dataset...")
-        mapped = mapped if mapped is not None else load_and_map_all()
-        preprocessor = UPITransactionPreprocessor(PreprocessingConfig())
-        x, y = preprocessor.fit_transform(mapped)
-        save_joblib(preprocessor, PROJECT_ROOT / "models" / "preprocessor.pkl")
-        save_dataframe(mapped, PROCESSED_DATA_DIR / "preprocessed_common_schema.csv")
-        print(f"Preprocessed shape: X={x.shape}, y={None if y is None else y.shape}")
+    if run_all or args.preprocess or args.features:
+        print("Stage 2/5: Fitting once and preprocessing Parquet chunks...")
+        ensure_processed_parquet()
 
     if run_all or args.features:
-        print("Stage 3/5: Engineering features...")
-        mapped = mapped if mapped is not None else load_and_map_all()
-        feature_df = balanced_binary_sample(
-            mapped,
-            target_column="fraud_label",
-            max_rows=300_000,
-            random_state=42,
-        )
-        print(f"Using balanced feature-engineering sample: {feature_df.shape}")
-        engineered = engineer_features(feature_df)
-        save_dataframe(engineered, PROCESSED_DATA_DIR / "engineered_features.csv")
-        print(f"Engineered feature dataset shape: {engineered.shape}")
+        print("Stage 3/5: Feature engineering was applied during streaming preprocessing.")
+        ensure_mapped_parquet()
 
     if run_all or args.train_supervised:
         print("Stage 4/5: Training supervised models...")
-        mapped = mapped if mapped is not None else load_and_map_all()
-        supervised_results = train_supervised_models(mapped)
+        processed_path = ensure_processed_parquet()
+        supervised_sample = sample_parquet_rows(
+            processed_path,
+            max_rows=args.supervised_rows,
+            chunk_size=config.chunk_size,
+            target_column="fraud_label",
+            random_state=42,
+            columns=None,
+        )
+        print(f"Using bounded supervised sample: {supervised_sample.shape}")
+        supervised_results = train_supervised_models(
+            supervised_sample,
+            max_rows=len(supervised_sample),
+            preprocessor=preprocessor,
+            preprocessed=True,
+        )
         results_path = REPORTS_DIR / "supervised_metrics.json"
         results_path.write_text(json.dumps(supervised_results, indent=2, default=str), encoding="utf-8")
+        del supervised_sample
         print("Supervised model training complete.")
 
     if run_all or args.train_anomaly:
         print("Stage 5/5: Training anomaly models...")
-        mapped = mapped if mapped is not None else load_and_map_all()
-        anomaly_results = train_anomaly_models(mapped)
+        processed_path = ensure_processed_parquet()
+        anomaly_sample = sample_parquet_rows(
+            processed_path,
+            max_rows=args.anomaly_rows,
+            chunk_size=config.chunk_size,
+            target_column="fraud_label",
+            random_state=42,
+            columns=None,
+        )
+        print(f"Using bounded anomaly sample: {anomaly_sample.shape}")
+        anomaly_results = train_anomaly_models(
+            anomaly_sample,
+            max_rows=len(anomaly_sample),
+            preprocessor=preprocessor,
+            preprocessed=True,
+        )
         for name, frame in anomaly_results.items():
-            save_dataframe(frame, PROCESSED_DATA_DIR / f"{name}_anomaly_scores.csv")
+            frame.to_csv(PROJECT_ROOT / "data" / "processed" / f"{name}_anomaly_scores.csv", index=False)
+        del anomaly_sample
         print("Anomaly model training complete.")
 
-    print("Pipeline completed up to supervised and unsupervised anomaly detection.")
+    print("Pipeline completed with Parquet-backed chunk processing.")
     return 0
 
 

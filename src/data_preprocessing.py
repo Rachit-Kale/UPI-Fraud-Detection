@@ -44,6 +44,7 @@ class UPITransactionPreprocessor:
         self.low_cardinality_features_: list[str] = []
         self.high_cardinality_features_: list[str] = []
         self.output_feature_names_: list[str] = []
+        self.outlier_bounds_: dict[str, tuple[float, float]] = {}
 
     def fit_transform(self, df: pd.DataFrame) -> tuple[np.ndarray, pd.Series | None]:
         """Fit preprocessing steps and return transformed features with labels."""
@@ -80,10 +81,18 @@ class UPITransactionPreprocessor:
         working = remove_duplicates(working)
         working = format_timestamp(working)
         working = handle_missing_values(working)
+        excluded = [self.config.target_column]
+        if fit:
+            self.outlier_bounds_ = calculate_outlier_bounds(
+                working,
+                quantile=self.config.outlier_clip_quantile,
+                exclude=excluded,
+            )
         working = normalize_outliers(
             working,
             quantile=self.config.outlier_clip_quantile,
-            exclude=[self.config.target_column],
+            exclude=excluded,
+            bounds=self.outlier_bounds_ if self.outlier_bounds_ else None,
         )
 
         y = None
@@ -242,7 +251,12 @@ def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
     filled = df.copy()
     for column in filled.columns:
         if pd.api.types.is_numeric_dtype(filled[column]):
-            filled[column] = filled[column].fillna(filled[column].median())
+            # A one-row prediction has no previous-transaction value, so some
+            # engineered numeric columns can be entirely NaN. Avoid calling
+            # median on an empty valid series because NumPy emits a warning.
+            valid_values = filled[column].dropna()
+            fallback = valid_values.median() if not valid_values.empty else 0.0
+            filled[column] = filled[column].fillna(fallback)
         elif pd.api.types.is_datetime64_any_dtype(filled[column]):
             filled[column] = filled[column].fillna(pd.Timestamp("2024-01-01"))
         elif pd.api.types.is_categorical_dtype(filled[column]):
@@ -267,16 +281,33 @@ def normalize_outliers(
     df: pd.DataFrame,
     quantile: float = 0.995,
     exclude: list[str] | None = None,
+    bounds: dict[str, tuple[float, float]] | None = None,
 ) -> pd.DataFrame:
-    """Clip numeric outliers using symmetric quantiles."""
+    """Clip numeric outliers using fit-time bounds when supplied."""
     clipped = df.copy()
     excluded = set(exclude or [])
+    active_bounds = bounds or calculate_outlier_bounds(clipped, quantile, excluded)
     for column in numeric_columns(clipped, exclude=excluded):
-        lower = clipped[column].quantile(1 - quantile)
-        upper = clipped[column].quantile(quantile)
+        lower, upper = active_bounds.get(column, (None, None))
         if pd.notna(lower) and pd.notna(upper) and lower < upper:
             clipped[column] = clipped[column].clip(lower, upper)
     return clipped
+
+
+def calculate_outlier_bounds(
+    df: pd.DataFrame,
+    quantile: float = 0.995,
+    exclude: list[str] | None = None,
+) -> dict[str, tuple[float, float]]:
+    """Calculate numeric clipping bounds once for consistent chunk transforms."""
+    excluded = set(exclude or [])
+    result: dict[str, tuple[float, float]] = {}
+    for column in numeric_columns(df, exclude=excluded):
+        lower = df[column].quantile(1 - quantile)
+        upper = df[column].quantile(quantile)
+        if pd.notna(lower) and pd.notna(upper):
+            result[column] = (float(lower), float(upper))
+    return result
 
 
 def _get_scaler(name: ScalerName):

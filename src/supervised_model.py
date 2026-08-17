@@ -44,16 +44,36 @@ def train_supervised_models(
     test_size: float = 0.2,
     random_state: int = 42,
     max_rows: int = 500_000,
+    preprocessor: UPITransactionPreprocessor | None = None,
+    preprocessed: bool = False,
 ) -> dict[str, Any]:
-    """Train XGBoost and Random Forest models on engineered transaction features."""
-    training_df = sample_training_data(df, max_rows=max_rows, random_state=random_state)
-    LOGGER.info("Supervised training dataset size: %s rows", len(training_df))
-    engineered = engineer_features(training_df)
-    preprocessor = UPITransactionPreprocessor(
-        PreprocessingConfig(scaler="robust", encoder="onehot")
+    """Train XGBoost and Random Forest models once on a bounded batch.
+
+    When ``preprocessed=True``, ``df`` must contain ``transaction_id``,
+    ``fraud_label``, and already transformed feature columns. This path lets
+    the Parquet pipeline reuse one fit-time preprocessor consistently.
+    """
+    training_df = df.copy() if preprocessed else sample_training_data(
+        df,
+        max_rows=max_rows,
+        random_state=random_state,
     )
-    LOGGER.info("Fitting supervised preprocessor")
-    x, y = preprocessor.fit_transform(engineered)
+    LOGGER.info("Supervised training dataset size: %s rows", len(training_df))
+    if preprocessed:
+        feature_frame = training_df.drop(columns=["transaction_id", "fraud_label"], errors="ignore")
+        x = feature_frame.to_numpy(dtype=np.float32, copy=False)
+        y = pd.to_numeric(training_df["fraud_label"], errors="coerce").fillna(0).astype(int)
+        feature_names = list(feature_frame.columns)
+        if preprocessor is None:
+            raise ValueError("A fitted preprocessor is required for preprocessed training.")
+    else:
+        engineered = engineer_features(training_df)
+        preprocessor = preprocessor or UPITransactionPreprocessor(
+            PreprocessingConfig(scaler="robust", encoder="onehot")
+        )
+        LOGGER.info("Fitting supervised preprocessor")
+        x, y = preprocessor.fit_transform(engineered)
+        feature_names = preprocessor.get_feature_names()
     if y is None:
         raise ValueError("fraud_label is required for supervised training.")
     LOGGER.info("Supervised feature matrix shape: %s", x.shape)
@@ -109,7 +129,7 @@ def train_supervised_models(
         save_roc_curve(y_test, probability, report_path / f"{name}_roc_curve.png")
         save_feature_importance(
             model,
-            preprocessor.get_feature_names(),
+            feature_names,
             report_path / f"{name}_feature_importance.png",
         )
 

@@ -1,280 +1,278 @@
-# UPI Fraud Detection Project Run Commands
+# UPI Fraud Detection: Run Commands
 
-This guide assumes the project folder is:
-
-```powershell
-D:\MAJOR PROJECT\Demo\upi-fraud-detection
-```
-
-Run all commands from PowerShell.
-
-## 1. Open Project Folder
-
-```powershell
-cd "D:\MAJOR PROJECT\Demo\upi-fraud-detection"
-```
-
-## 2. Add Datasets
-
-Place the dataset CSV files inside:
+This guide is for the offline research pipeline in:
 
 ```text
-D:\MAJOR PROJECT\Demo\upi-fraud-detection\data\raw
+D:/MAJOR PROJECT/Demo/upi-fraud-detection
 ```
 
-Expected examples:
+Run Python commands from the project root. Run React commands from the frontend folder.
 
-```text
-data\raw\digital_payment_transactions.csv
-data\raw\ieee_transaction.csv
-data\raw\paysim.csv
-data\raw\upi_transaction_2024.csv
+## 1. Open the Project
+
+```powershell
+cd "D:/MAJOR PROJECT/Demo/upi-fraud-detection"
 ```
 
-## 3. Create Python Virtual Environment
+## 2. Create and Activate the Python Environment
+
+Create the environment once:
 
 ```powershell
 python -m venv .venv
 ```
 
-Activate it:
+Activate it for every new PowerShell window:
 
 ```powershell
-.\.venv\Scripts\activate
+./.venv/Scripts/activate
 ```
 
-You should see this at the beginning of the terminal line:
+Confirm that the prompt starts with (.venv).
 
-```text
-(.venv)
-```
-
-## 4. Install Python Dependencies
+## 3. Install Python Dependencies
 
 ```powershell
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-The React API uses FastAPI, so make sure these packages install successfully:
+The requirements include the Parquet engine, PyArrow, and the API packages used by the React frontend.
 
-```powershell
-pip install fastapi uvicorn pydantic
+## 4. Add the Datasets
+
+Copy only the approved dataset CSV files into:
+
+```text
+D:/MAJOR PROJECT/Demo/upi-fraud-detection/data/raw
 ```
 
-## 5. Run Full ML Pipeline
+Expected files are:
+
+```text
+data/raw/digital_payment_transactions.csv
+data/raw/ieee_transaction.csv
+data/raw/paysim.csv
+data/raw/upi_transaction_2024.csv
+```
+
+Check that the files are present:
+
+```powershell
+Get-ChildItem ./data/raw
+```
+
+Do not place generated Parquet files in data/raw. The pipeline creates them in data/merged and data/processed.
+
+## 5. Run the Complete ML Pipeline
+
+For the normal run, use:
 
 ```powershell
 python main.py --all
 ```
 
-This performs:
+The complete execution order is:
 
-- dataset loading
-- schema mapping
-- preprocessing
-- feature engineering
-- supervised model training
-- anomaly model training
-- model saving into `models\`
-- report saving into `reports\`
+1. Load each raw CSV in chunks and map it to the common schema.
+2. Write the mapped records to compressed Parquet at data/merged/mapped_common_schema.parquet.
+3. Fit the preprocessing state once on a bounded fitting sample.
+4. Read mapped Parquet chunks, apply the same preprocessing and feature engineering, and write data/processed/processed_features.parquet.
+5. Train XGBoost and Random Forest once using the configured supervised sample.
+6. Train Isolation Forest and LOF once using the configured anomaly sample.
+7. Save models, preprocessing state, evaluation metrics, and reports.
 
-Important: the datasets are large, so this may take time.
+The process is batch-based and may take time because it scans millions of records. It should not keep the complete raw dataset in RAM.
 
-## 6. Run Only Specific Pipeline Stages
+## 6. Recommended Demonstration Run
 
-Load and map datasets only:
-
-```powershell
-python main.py --load
-```
-
-Preprocess only:
+This command keeps the default chunk size at 100,000 rows and uses bounded training samples:
 
 ```powershell
-python main.py --preprocess
+python main.py --all --chunk-size 100000 --fit-rows 100000 --supervised-rows 500000 --anomaly-rows 200000
 ```
 
-Feature engineering only:
+Use this first to verify the complete project. Increase the training row limits later if your machine has enough memory and time.
+
+## 7. Adjust Chunk and Training Sizes
+
+The chunk size controls how many mapped Parquet rows are processed at a time:
 
 ```powershell
-python main.py --features
+python main.py --all --chunk-size 50000
+python main.py --all --chunk-size 250000
 ```
 
-Train supervised models only:
+Use a smaller chunk size when RAM is limited. Use a larger chunk size when disk I/O is the bottleneck.
+
+The fitting and model-training limits are separate:
 
 ```powershell
-python main.py --train-supervised
+python main.py --all --fit-rows 200000 --supervised-rows 700000 --anomaly-rows 300000
 ```
 
-Train anomaly models only:
+These limits do not delete records from Parquet. They only bound the samples materialized for state fitting and batch model training.
+
+## 8. Run Individual Stages
+
+The safest option is always --all, because later stages depend on the Parquet artifacts produced earlier. Individual commands are available for reruns:
+
+Load and create mapped Parquet:
 
 ```powershell
-python main.py --train-anomaly
+python main.py --load --chunk-size 100000
 ```
 
-## 7. Run Streamlit Dashboard
-
-Use this if you want the original Python dashboard:
+Stream preprocessing and feature engineering into processed Parquet:
 
 ```powershell
-streamlit run app\app.py
+python main.py --preprocess --chunk-size 100000 --fit-rows 100000
 ```
 
-Open the URL shown in the terminal, usually:
-
-```text
-http://localhost:8501
-```
-
-## 8. Run React Dashboard With FastAPI
-
-React cannot directly load Python `.pkl` model files, so run the local FastAPI service first.
-
-Terminal 1: start the API from the project root:
+Run the streaming feature stage explicitly:
 
 ```powershell
-cd "D:\MAJOR PROJECT\Demo\upi-fraud-detection"
-.\.venv\Scripts\activate
+python main.py --features --chunk-size 100000 --fit-rows 100000
+```
+
+Train supervised models:
+
+```powershell
+python main.py --train-supervised --supervised-rows 500000
+```
+
+Train anomaly models:
+
+```powershell
+python main.py --train-anomaly --anomaly-rows 200000
+```
+
+If a required Parquet artifact does not exist, rerun:
+
+```powershell
+python main.py --all
+```
+
+## 9. Verify Parquet Output and Row Counts
+
+Check the mapped Parquet file:
+
+```powershell
+python -c "import pyarrow.parquet as pq; p=pq.ParquetFile('data/merged/mapped_common_schema.parquet'); print('mapped rows:', p.metadata.num_rows); print('row groups:', p.num_row_groups); print('columns:', p.schema_arrow.names)"
+```
+
+Check the processed feature Parquet file:
+
+```powershell
+python -c "import pyarrow.parquet as pq; p=pq.ParquetFile('data/processed/processed_features.parquet'); print('processed rows:', p.metadata.num_rows); print('row groups:', p.num_row_groups); print('columns:', p.schema_arrow.names)"
+```
+
+Check saved model and report files:
+
+```powershell
+Get-ChildItem ./models
+Get-ChildItem ./reports
+```
+
+The mapped and processed row counts should match apart from rows removed by the existing validation and missing-label rules. The Parquet row-group count should be greater than one for a large dataset.
+
+## 10. Start the FastAPI Backend
+
+Keep the virtual environment active and open a new PowerShell window in the project root:
+
+```powershell
+cd "D:/MAJOR PROJECT/Demo/upi-fraud-detection"
+./.venv/Scripts/activate
 uvicorn api.main:app --reload
 ```
 
-API URL:
-
-```text
-http://127.0.0.1:8000
-```
-
-API docs:
-
-```text
-http://127.0.0.1:8000/docs
-```
-
-Terminal 2: start the React app:
+Leave this terminal running. Verify the backend in another terminal:
 
 ```powershell
-cd "D:\MAJOR PROJECT\Demo\upi-fraud-detection\frontend"
+Invoke-RestMethod http://127.0.0.1:8000/health
+Invoke-RestMethod http://127.0.0.1:8000/models/status
+```
+
+The backend reads the generated models and Parquet analytics data. Run the ML pipeline before starting the backend if the model files do not exist.
+
+## 11. Start the React Frontend
+
+Open a second PowerShell window:
+
+```powershell
+cd "D:/MAJOR PROJECT/Demo/upi-fraud-detection/frontend"
 npm install
 npm run dev
 ```
 
-React dashboard URL:
+Open the URL printed by Vite, normally:
 
 ```text
 http://localhost:5173
 ```
 
-React dashboard pages:
-
-- `Simulation`: manual transaction testing with supervised and anomaly outputs.
-- `Workflow`: animated visual explanation of the full offline project pipeline.
-- `Analytics`: imported dataset statistics, fraud rate, transaction mix, amount distribution, hourly volume, device mix, and location charts.
-
-Useful API endpoints:
-
-```text
-http://127.0.0.1:8000/models/status
-http://127.0.0.1:8000/analytics/data
-http://127.0.0.1:8000/reports/summary
-```
-
-## 9. Node.js Requirement For React
-
-Vite React needs a modern Node.js version.
-
-Recommended:
-
-```text
-Node.js 18 or newer
-```
-
-Check your version:
+npm install is required only after a fresh checkout or when package.json changes. If PowerShell blocks the npm wrapper, use:
 
 ```powershell
-node --version
+npm.cmd install
+npm.cmd run dev
 ```
 
-Check npm:
+The frontend pages are:
+
+- Simulation: enter and test a transaction.
+- Workflow: view the animated end-to-end research workflow.
+- Analytics: inspect imported dataset distributions and model metrics.
+- Finance Research Report: view the one-page transaction report, processing evidence, and grey-area comparison graph.
+- Prediction Logs: open previous test transactions and inspect their brief details.
+
+## 12. Test the Prediction Flow
+
+With both the API and Vite terminals running:
+
+1. Open the React URL.
+2. Go to Simulation.
+3. Select a preset or enter a transaction manually.
+4. Select Run Test.
+5. Review the separate supervised fraud probability and unsupervised anomaly score.
+6. Review the final fusion score and research resolution in Model Outputs.
+7. Open Finance Research Report for the complete explanation.
+8. Open Prediction Logs and click a previous transaction to inspect it.
+
+The project is intentionally post-transaction and research-oriented. It does not implement real-time payment processing, banking integration, authentication, or production deployment.
+
+## 13. Troubleshooting
+
+Missing dataset error:
 
 ```powershell
-npm --version
+Get-ChildItem ./data/raw
 ```
 
-If `npm install` or `npm run dev` fails because Node is old, install the latest LTS version of Node.js, then reopen PowerShell.
-
-## 10. Expected Model Files
-
-After successful training, these files should exist:
-
-```text
-models\xgboost_model.pkl
-models\random_forest.pkl
-models\isolation_forest.pkl
-models\lof_model.pkl
-models\preprocessor.pkl
-models\anomaly_preprocessor.pkl
-models\scaler.pkl
-```
-
-If the React or Streamlit dashboard says models are missing, rerun:
+If a required file is missing, copy it into data/raw and rerun:
 
 ```powershell
 python main.py --all
 ```
 
-## 11. Common Problems
-
-If FastAPI does not start:
+Missing model files or HTTP 500 from the prediction endpoint:
 
 ```powershell
-pip install fastapi uvicorn pydantic
+python main.py --all --chunk-size 100000 --fit-rows 100000 --supervised-rows 500000 --anomaly-rows 200000
 ```
 
-If React cannot connect to the API, make sure this command is still running in Terminal 1:
+API connection error in React:
 
 ```powershell
-uvicorn api.main:app --reload
+Invoke-RestMethod http://127.0.0.1:8000/health
 ```
 
-If port `8000` is busy:
+Start the API with uvicorn api.main:app --reload and leave it running while using Vite.
 
-```powershell
-uvicorn api.main:app --reload --port 8001
-```
+Slow analytics page:
 
-Then update `frontend\vite.config.js` proxy target from:
+The backend scans Parquet in bounded chunks to calculate population counts and uses a bounded sample for chart points. The first analytics request can therefore take longer than a cached request.
 
-```js
-target: "http://127.0.0.1:8000"
-```
+## 14. More Pipeline Details
 
-to:
-
-```js
-target: "http://127.0.0.1:8001"
-```
-
-If port `5173` is busy:
-
-```powershell
-npm run dev -- --port 5174
-```
-
-Then open:
-
-```text
-http://localhost:5174
-```
-
-## 12. Recommended Demo Flow
-
-1. Run `python main.py --all`.
-2. Confirm model files exist inside `models\`.
-3. Start FastAPI with `uvicorn api.main:app --reload`.
-4. Start React with `npm run dev`.
-5. Open `http://localhost:5173`.
-6. Select a preset transaction.
-7. Click `Run Test`.
-8. Show supervised output and anomaly output separately.
-
-Remember: this project stops at supervised fraud detection and unsupervised anomaly detection. It does not implement a final grey-area fusion engine yet.
+See Pipeline.md for the Parquet architecture, chunk-processing behavior, memory notes, reproducibility guidance, and detailed command-line options.

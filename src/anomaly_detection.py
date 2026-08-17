@@ -28,16 +28,28 @@ def train_anomaly_models(
     contamination: float = 0.05,
     random_state: int = 42,
     max_rows: int = 200_000,
+    preprocessor: UPITransactionPreprocessor | None = None,
+    preprocessed: bool = False,
 ) -> dict[str, pd.DataFrame]:
-    """Train Isolation Forest and LOF models and save anomaly outputs."""
-    training_df = sample_anomaly_data(df, max_rows=max_rows, random_state=random_state)
-    LOGGER.info("Anomaly training dataset size: %s rows", len(training_df))
-    engineered = engineer_features(training_df)
-    preprocessor = UPITransactionPreprocessor(
-        PreprocessingConfig(scaler="robust", encoder="onehot")
+    """Train Isolation Forest and LOF once on a bounded batch."""
+    training_df = df.copy() if preprocessed else sample_anomaly_data(
+        df,
+        max_rows=max_rows,
+        random_state=random_state,
     )
-    LOGGER.info("Fitting anomaly preprocessor")
-    x, _ = preprocessor.fit_transform(engineered)
+    LOGGER.info("Anomaly training dataset size: %s rows", len(training_df))
+    if preprocessed:
+        feature_frame = training_df.drop(columns=["transaction_id", "fraud_label"], errors="ignore")
+        x = feature_frame.to_numpy(dtype=np.float32, copy=False)
+        if preprocessor is None:
+            raise ValueError("A fitted preprocessor is required for preprocessed training.")
+    else:
+        engineered = engineer_features(training_df)
+        preprocessor = preprocessor or UPITransactionPreprocessor(
+            PreprocessingConfig(scaler="robust", encoder="onehot")
+        )
+        LOGGER.info("Fitting anomaly preprocessor")
+        x, _ = preprocessor.fit_transform(engineered)
     LOGGER.info("Anomaly feature matrix shape: %s", x.shape)
 
     isolation_forest = IsolationForest(

@@ -66,6 +66,9 @@ The pipeline discovers supported dataset files in `data/raw/`, maps them into th
 common schema, preprocesses them, engineers features, trains supervised models, and
 trains anomaly detection models.
 
+For the Parquet layout, chunk-size options, memory behavior, and model-training
+limitations, see [Pipeline.md](Pipeline.md).
+
 ## Streamlit Testing Dashboard (Optional)
 
 ```bash

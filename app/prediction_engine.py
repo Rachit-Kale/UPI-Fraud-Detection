@@ -22,6 +22,9 @@ class PredictionEngine:
         self.supervised_model = self._load_first_available(
             ["xgboost_model.pkl", "random_forest.pkl"]
         )
+        self.supervised_model_name = self._find_first_available_name(
+            ["xgboost_model.pkl", "random_forest.pkl"]
+        )
         self.supervised_preprocessor = self._load_optional("preprocessor.pkl") or self._load_optional("scaler.pkl")
         self.anomaly_model = self._load_optional("isolation_forest.pkl")
         self.anomaly_preprocessor = self._load_optional("anomaly_preprocessor.pkl") or self.supervised_preprocessor
@@ -51,6 +54,10 @@ class PredictionEngine:
             self.supervised_preprocessor,
             frame,
         )
+        if supervised.empty or "fraud_probability" not in supervised.columns:
+            raise RuntimeError("The supervised model returned no fraud probability.")
+        supervised["model_name"] = self.supervised_model_name or "supervised_model"
+        supervised["signal_status"] = "calculated"
         anomaly = predict_anomaly(self.anomaly_model, self.anomaly_preprocessor, frame)
         return {"supervised": supervised, "anomaly": anomaly}
 
@@ -65,6 +72,13 @@ class PredictionEngine:
             model = self._load_optional(filename)
             if model is not None:
                 return model
+        return None
+
+    def _find_first_available_name(self, filenames: list[str]) -> str | None:
+        """Return the artifact name used for the supervised prediction."""
+        for filename in filenames:
+            if (self.model_dir / filename).exists():
+                return filename.removesuffix(".pkl")
         return None
 
 

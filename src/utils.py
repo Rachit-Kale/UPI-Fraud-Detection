@@ -93,9 +93,9 @@ def safe_datetime(series: pd.Series) -> pd.Series:
     return converted.dt.tz_localize(None)
 
 
-def make_transaction_ids(prefix: str, length: int) -> pd.Series:
+def make_transaction_ids(prefix: str, length: int, start: int = 0) -> pd.Series:
     """Create deterministic transaction ids for datasets that do not provide one."""
-    return pd.Series([f"{prefix}_{idx:08d}" for idx in range(length)])
+    return pd.Series([f"{prefix}_{idx:08d}" for idx in range(start, start + length)])
 
 
 def numeric_columns(df: pd.DataFrame, exclude: Iterable[str] | None = None) -> list[str]:

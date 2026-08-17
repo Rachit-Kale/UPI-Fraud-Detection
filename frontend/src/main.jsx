@@ -197,6 +197,7 @@ function App() {
 function SimulationPage({ form, result, loading, presets, updateField, applyPreset, runPrediction }) {
   const fraudProbability = result?.supervised?.fraud_probability ?? 0;
   const anomalyConfidence = result?.anomaly?.anomaly_confidence ?? 0;
+  const supervisedReady = result?.supervised?.signal_status === "calculated";
 
   return (
     <section className="workspace">
@@ -237,8 +238,8 @@ function SimulationPage({ form, result, loading, presets, updateField, applyPres
         </div>
 
         <div className="signal-grid">
-          <SignalCard title="Supervised Model" value={formatPercent(fraudProbability)} label={result?.supervised?.fraud_prediction ? "Fraud" : "Legitimate"} accent="red" progress={fraudProbability} />
-          <SignalCard title="Anomaly Model" value={result ? result.anomaly.anomaly_score.toFixed(4) : "0.0000"} label={result?.anomaly?.anomaly_label ?? "Waiting"} accent="teal" progress={anomalyConfidence} />
+          <SignalCard title="Supervised Model" value={supervisedReady ? formatPercent(fraudProbability) : "Waiting"} label={supervisedReady ? (result.supervised.fraud_prediction ? "Fraud" : "Legitimate") : "Not calculated"} meta={supervisedReady ? result.supervised.model_name : "Run Test to calculate"} accent="red" progress={supervisedReady ? fraudProbability : 0} />
+          <SignalCard title="Anomaly Model" value={result ? result.anomaly.anomaly_score.toFixed(4) : "Waiting"} label={result?.anomaly?.anomaly_label ?? "Waiting"} meta={result ? "Isolation Forest" : "Run Test to calculate"} accent="teal" progress={anomalyConfidence} />
         </div>
 
         <ComparisonChart amount={Number(form.amount)} fraudProbability={fraudProbability} anomalyConfidence={anomalyConfidence} />
@@ -361,7 +362,7 @@ function StatusPanel({ status }) {
   return (
     <aside className={`status-panel ${ready ? "ready" : "waiting"}`}>
       <ShieldCheck size={24} />
-      <div>
+      <div className={`status-content ${!ready ? "missing" : ""}`}>
         <span>Model Status</span>
         <strong>{ready ? "Ready for Phase 1 testing" : "Training artifacts missing"}</strong>
       </div>
@@ -443,12 +444,13 @@ function SelectField({ icon, label, value, options, onChange }) {
   );
 }
 
-function SignalCard({ title, value, label, accent, progress }) {
+function SignalCard({ title, value, label, meta, accent, progress }) {
   return (
     <article className={`signal-card ${accent}`}>
       <span>{title}</span>
       <strong>{value}</strong>
       <em>{label}</em>
+      <small>{meta}</small>
       <div className="meter">
         <i style={{ width: `${clampPercent(progress * 100)}%` }} />
       </div>
@@ -565,6 +567,7 @@ function FullReportPanel({ report, analytics }) {
   const fusion = report.fusion_resolution || {};
   const supervised = report.supervised_model_output || {};
   const anomaly = report.unsupervised_model_output || {};
+  const reasoning = report.reasoning || {};
 
   return (
     <section className="full-report-panel">
@@ -586,6 +589,21 @@ function FullReportPanel({ report, analytics }) {
         <ReportItem label="Ambiguity score" value={formatPercent(fusion.ambiguity_score)} />
       </div>
 
+      <ReportSection title="Why this resolution?">
+        <div className="reasoning-copy">
+          <p>{reasoning.resolution_reason || report.interpretation}</p>
+          <p>{reasoning.supervised_reason}</p>
+          <p>{reasoning.anomaly_reason}</p>
+          <p>{reasoning.sensitivity_note}</p>
+        </div>
+        <div className="reasoning-factors">
+          <strong>Observed input factors</strong>
+          <ul>
+            {(reasoning.input_factors || ["No input factors recorded"]).map((factor) => <li key={factor}>{factor}</li>)}
+          </ul>
+        </div>
+      </ReportSection>
+
       <div className="full-report-grid">
         <ReportSection title="Transaction details">
           <ReportItem label="Amount" value={currency(transaction.amount)} />
@@ -600,6 +618,8 @@ function FullReportPanel({ report, analytics }) {
         <ReportSection title="Model evidence">
           <ReportItem label="Fraud probability" value={formatPercent(supervised.fraud_probability)} />
           <ReportItem label="Fraud prediction" value={supervised.fraud_prediction ? "Fraud signal" : "Legitimate signal"} />
+          <ReportItem label="Supervised model" value={supervised.model_name} />
+          <ReportItem label="Supervised status" value={supervised.signal_status} />
           <ReportItem label="Unusualness percentile" value={formatPercent(anomaly.anomaly_percentile)} />
           <ReportItem label="Raw anomaly score" value={Number(anomaly.anomaly_score || 0).toFixed(4)} />
           <ReportItem label="Signal disagreement" value={formatPercent(fusion.signal_disagreement)} />
@@ -614,6 +634,7 @@ function FullReportPanel({ report, analytics }) {
         <ReportItem label="Supervised weight" value={formatPercent(fusion.weights?.supervised_fraud_probability)} />
         <ReportItem label="Unsupervised weight" value={formatPercent(fusion.weights?.unsupervised_unusualness_percentile)} />
         <ReportItem label="Calibration" value={anomaly.calibration_method} />
+        <ReportItem label="Decision thresholds" value="50.0% supervised fraud; 60.0% fusion fraud-likely; 38.0% ambiguity" />
       </ReportSection>
 
       <TransactionDistributionChart
@@ -680,7 +701,7 @@ function TransactionDistributionChart({ distribution }) {
         <div>
           <div className="mini-title"><LineChart size={17} /> Population comparison</div>
           <h3>All imported transactions by amount rank</h3>
-          <p>{compactNumber(distribution.line_represents_transactions)} transactions shape this ranked line. The visible line is decimated for browser performance.</p>
+          <p>{compactNumber(distribution.line_represents_transactions)} transactions shape this ranked line. {compactNumber(distribution.sampled_transactions)} deterministic points are plotted for browser performance.</p>
         </div>
         <div className="distribution-stats">
           <span>Median <strong>{currency(distribution.median)}</strong></span>

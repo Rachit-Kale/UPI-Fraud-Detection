@@ -115,6 +115,13 @@ h2 {
   font-size: 18px;
 }
 
+/* If you want the whole <aside> container to turn red */
+.status-panel.waiting {
+  background-color: #ffe6e6;
+  border-color: #cc0000;
+  color: #7a231b;
+}
+
 .artifact-dots {
   grid-column: 1 / -1;
   display: flex;
@@ -688,6 +695,16 @@ h2 {
   font-style: normal;
 }
 
+.signal-card small {
+  display: block;
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
 .signal-card strong {
   display: block;
   margin: 8px 0 4px;
@@ -723,6 +740,38 @@ h2 {
 .signal-card.teal .meter i,
 .bar-row i {
   background: linear-gradient(90deg, var(--green), var(--teal));
+}
+
+.reasoning-copy {
+  display: grid;
+  gap: 8px;
+  margin-top: 11px;
+}
+
+.reasoning-copy p {
+  margin: 0;
+  line-height: 1.55;
+}
+
+.reasoning-factors {
+  margin-top: 14px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.reasoning-factors strong {
+  color: var(--ink);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.reasoning-factors ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.reasoning-factors li + li {
+  margin-top: 4px;
 }
 
 .comparison,

@@ -219,8 +219,13 @@ def map_dataset_schema(
     df: pd.DataFrame,
     dataset_key: str,
     source_name: str | None = None,
+    id_offset: int = 0,
 ) -> pd.DataFrame:
-    """Map a supported raw dataset into the unified common schema."""
+    """Map a supported raw dataset into the unified common schema.
+
+    ``id_offset`` keeps generated identifiers unique when a source is read in
+    multiple chunks instead of as one in-memory dataframe.
+    """
     if df.empty:
         raise ValueError("Cannot map an empty dataframe.")
 
@@ -232,9 +237,20 @@ def map_dataset_schema(
         if source_column is not None:
             mapped[target_column] = df[source_column]
         else:
-            mapped[target_column] = _default_column_value(target_column, len(df), source_prefix)
+            mapped[target_column] = _default_column_value(
+                target_column,
+                len(df),
+                source_prefix,
+                id_offset=id_offset,
+            )
 
-    mapped = _apply_dataset_specific_mapping(df, mapped, dataset_key, source_prefix)
+    mapped = _apply_dataset_specific_mapping(
+        df,
+        mapped,
+        dataset_key,
+        source_prefix,
+        id_offset=id_offset,
+    )
     mapped = _clean_common_schema(mapped)
     validate_common_schema(mapped, source_name=source_prefix)
     return mapped
@@ -267,9 +283,14 @@ def validate_common_schema(df: pd.DataFrame, source_name: str | None = None) -> 
         raise ValueError("fraud_label must contain binary values 0 and 1.")
 
 
-def _default_column_value(column: str, length: int, source_prefix: str) -> object:
+def _default_column_value(
+    column: str,
+    length: int,
+    source_prefix: str,
+    id_offset: int = 0,
+) -> object:
     if column == "transaction_id":
-        return make_transaction_ids(source_prefix, length)
+        return make_transaction_ids(source_prefix, length, start=id_offset)
     if column == "timestamp":
         return pd.Series(pd.NaT, index=range(length))
     if column == "amount":
@@ -284,6 +305,7 @@ def _apply_dataset_specific_mapping(
     mapped: pd.DataFrame,
     dataset_key: str,
     source_prefix: str,
+    id_offset: int = 0,
 ) -> pd.DataFrame:
     """Apply known dataset-specific conversions after alias mapping."""
     if dataset_key == "paysim":
@@ -314,6 +336,7 @@ def _apply_dataset_specific_mapping(
         mapped.loc[mapped["transaction_id"].isna(), "transaction_id"] = make_transaction_ids(
             source_prefix,
             len(mapped),
+            start=id_offset,
         )
 
     return mapped

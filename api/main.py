@@ -22,6 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app.prediction_engine import PredictionEngine  # noqa: E402
 from src.fusion_model import build_transaction_report, fuse_signals  # noqa: E402
+from src.parquet_pipeline import MAPPED_PARQUET_PATH, iter_parquet_chunks  # noqa: E402
 from src.utils import MERGED_DATA_DIR, MODELS_DIR, PROCESSED_DATA_DIR, REPORTS_DIR  # noqa: E402
 
 
@@ -193,15 +194,22 @@ def predict(payload: TransactionRequest) -> dict[str, Any]:
 def run_model_prediction(engine: PredictionEngine, transaction: dict[str, Any]) -> dict[str, Any]:
     """Run both model families and return UI-ready prediction values."""
     outputs = engine.predict(transaction)
+    if outputs["supervised"].empty:
+        raise RuntimeError("The supervised model did not return a prediction.")
     supervised = outputs["supervised"].iloc[0].to_dict()
     anomaly = outputs["anomaly"].iloc[0].to_dict()
+    fraud_probability = float(supervised["fraud_probability"])
+    if not np.isfinite(fraud_probability):
+        raise RuntimeError("The supervised model returned an invalid fraud probability.")
     calibrated_confidence = calibrate_anomaly_confidence(float(anomaly["anomaly_score"]))
     return {
         "transaction_id": str(supervised["transaction_id"]),
         "supervised": {
-            "fraud_probability": float(supervised["fraud_probability"]),
+            "fraud_probability": fraud_probability,
             "fraud_prediction": int(supervised["fraud_prediction"]),
             "confidence_score": float(supervised["confidence_score"]),
+            "model_name": str(supervised.get("model_name", "supervised_model")),
+            "signal_status": str(supervised.get("signal_status", "calculated")),
         },
         "anomaly": {
             "anomaly_score": float(anomaly["anomaly_score"]),
@@ -279,8 +287,9 @@ def _replace_hour(value: Any, hour: int) -> datetime:
 @lru_cache(maxsize=1)
 def get_dataset_analytics() -> dict[str, Any]:
     """Compute lightweight aggregate analytics from imported data."""
-    data_path = MERGED_DATA_DIR / "merged_common_schema.csv"
-    if not data_path.exists():
+    parquet_path = MAPPED_PARQUET_PATH
+    csv_path = MERGED_DATA_DIR / "merged_common_schema.csv"
+    if not parquet_path.exists() and not csv_path.exists():
         return {"ready": False, "message": "Run `python main.py --all` to create merged data."}
 
     usecols = [
@@ -309,14 +318,22 @@ def get_dataset_analytics() -> dict[str, Any]:
         "10k-50k": 0,
         "50k+": 0,
     }
-    all_amounts: list[np.ndarray] = []
-    all_labels: list[np.ndarray] = []
+    sampled_amounts: list[np.ndarray] = []
+    sampled_labels: list[np.ndarray] = []
 
-    for chunk in pd.read_csv(data_path, usecols=usecols, chunksize=250_000):
+    if parquet_path.exists():
+        chunks = iter_parquet_chunks(parquet_path, chunk_size=250_000, columns=usecols)
+    else:
+        chunks = pd.read_csv(csv_path, usecols=usecols, chunksize=250_000)
+
+    for chunk_number, chunk in enumerate(chunks):
         total_rows += len(chunk)
         amount = pd.to_numeric(chunk["amount"], errors="coerce").fillna(0)
-        all_amounts.append(amount.to_numpy(dtype=np.float64, copy=True))
-        all_labels.append(chunk["fraud_label"].fillna(0).to_numpy(dtype=np.int8, copy=True))
+        sample_size = min(2_500, len(chunk))
+        if sample_size:
+            sampled = chunk.sample(n=sample_size, random_state=42 + chunk_number)
+            sampled_amounts.append(pd.to_numeric(sampled["amount"], errors="coerce").fillna(0).to_numpy(dtype=np.float64, copy=True))
+            sampled_labels.append(sampled["fraud_label"].fillna(0).to_numpy(dtype=np.int8, copy=True))
         amount_sum += float(amount.sum())
         current_min = float(amount.min()) if len(amount) else 0.0
         current_max = float(amount.max()) if len(amount) else 0.0
@@ -339,7 +356,13 @@ def get_dataset_analytics() -> dict[str, Any]:
     fraud_count = fraud_counts.get("1", 0)
     legitimate_count = fraud_counts.get("0", 0)
     average_amount = amount_sum / total_rows if total_rows else 0.0
-    transaction_distribution = build_transaction_distribution(all_amounts, all_labels)
+    transaction_distribution = build_transaction_distribution(
+        sampled_amounts,
+        sampled_labels,
+        represented_rows=total_rows,
+        minimum=amount_min or 0.0,
+        maximum=amount_max or 0.0,
+    )
 
     return {
         "ready": True,
@@ -366,14 +389,16 @@ def get_dataset_analytics() -> dict[str, Any]:
 def build_transaction_distribution(
     amount_chunks: list[np.ndarray],
     label_chunks: list[np.ndarray],
+    represented_rows: int | None = None,
+    minimum: float | None = None,
+    maximum: float | None = None,
     bin_count: int = 40,
 ) -> dict[str, Any]:
-    """Summarize every imported transaction for the report distribution chart.
+    """Summarize the full population with a bounded chart sample.
 
-    The chart is count-preserving: the sum of all bins equals the imported row
-    count. Quantile-based bins keep the visual useful even when a few payments
-    are much larger than the rest. The interquartile range is shown as the grey
-    review band, with lower and upper tails shown in green and red.
+    Population totals, minimum, and maximum are accumulated from every chunk.
+    Quantiles and line points use a deterministic bounded sample so the API does
+    not retain millions of amounts just to render a browser visualization.
     """
     if not amount_chunks:
         return {"ready": False, "bins": []}
@@ -388,8 +413,8 @@ def build_transaction_distribution(
     first_quartile, third_quartile = np.percentile(amounts, [25, 75])
     first_quartile = float(first_quartile)
     third_quartile = float(third_quartile)
-    minimum = float(amounts.min())
-    maximum = float(amounts.max())
+    minimum = float(amounts.min()) if minimum is None else float(minimum)
+    maximum = float(amounts.max()) if maximum is None else float(maximum)
     sorted_amounts = np.sort(amounts)
     plot_size = min(1200, sorted_amounts.size)
     plot_indexes = np.unique(np.linspace(0, sorted_amounts.size - 1, plot_size).astype(int))
@@ -430,7 +455,9 @@ def build_transaction_distribution(
     return {
         "ready": True,
         "metric": "transaction amount",
-        "total_transactions": int(amounts.size),
+        "total_transactions": int(represented_rows or amounts.size),
+        "sampled_transactions": int(amounts.size),
+        "population_transactions": int(represented_rows or amounts.size),
         "minimum": minimum,
         "maximum": maximum,
         "median": median,
@@ -444,7 +471,7 @@ def build_transaction_distribution(
             for index in plot_indexes
         ],
         "line_point_count": int(len(plot_indexes)),
-        "line_represents_transactions": int(sorted_amounts.size),
+        "line_represents_transactions": int(represented_rows or sorted_amounts.size),
         "bins": bins,
     }
 
