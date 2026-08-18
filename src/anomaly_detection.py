@@ -129,9 +129,10 @@ def predict_anomaly(
     model: Any,
     preprocessor: UPITransactionPreprocessor,
     df: pd.DataFrame,
+    feature_context: dict[str, object] | None = None,
 ) -> pd.DataFrame:
     """Generate anomaly output for new transactions."""
-    engineered = engineer_features(df)
+    engineered = engineer_features(df, context=feature_context)
     x = preprocessor.transform(engineered)
     return score_anomaly_model(model, x, df["transaction_id"])
 

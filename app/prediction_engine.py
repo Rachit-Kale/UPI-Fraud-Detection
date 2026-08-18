@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from src.anomaly_detection import predict_anomaly
+from src.probability_calibration import calibrate_probability_array
 from src.schema_mapping import COMMON_SCHEMA
 from src.supervised_model import predict_fraud_probability
 from src.utils import MODELS_DIR, load_joblib
@@ -28,6 +30,8 @@ class PredictionEngine:
         self.supervised_preprocessor = self._load_optional("preprocessor.pkl") or self._load_optional("scaler.pkl")
         self.anomaly_model = self._load_optional("isolation_forest.pkl")
         self.anomaly_preprocessor = self._load_optional("anomaly_preprocessor.pkl") or self.supervised_preprocessor
+        self.feature_context = self._load_optional("feature_context.pkl") or {}
+        self.probability_calibration = self._load_probability_calibration()
 
     @property
     def is_ready(self) -> bool:
@@ -38,6 +42,8 @@ class PredictionEngine:
                 self.supervised_preprocessor is not None,
                 self.anomaly_model is not None,
                 self.anomaly_preprocessor is not None,
+                bool(self.feature_context),
+                bool(self.probability_calibration),
             ]
         )
 
@@ -53,12 +59,27 @@ class PredictionEngine:
             self.supervised_model,
             self.supervised_preprocessor,
             frame,
+            feature_context=self.feature_context,
         )
         if supervised.empty or "fraud_probability" not in supervised.columns:
             raise RuntimeError("The supervised model returned no fraud probability.")
+        supervised["fraud_probability"] = calibrate_probability_array(
+            supervised["fraud_probability"].to_numpy(),
+            self.probability_calibration,
+        )
+        supervised["fraud_prediction"] = (supervised["fraud_probability"] >= 0.5).astype(int)
+        supervised["confidence_score"] = np.maximum(
+            supervised["fraud_probability"],
+            1.0 - supervised["fraud_probability"],
+        )
         supervised["model_name"] = self.supervised_model_name or "supervised_model"
         supervised["signal_status"] = "calculated"
-        anomaly = predict_anomaly(self.anomaly_model, self.anomaly_preprocessor, frame)
+        anomaly = predict_anomaly(
+            self.anomaly_model,
+            self.anomaly_preprocessor,
+            frame,
+            feature_context=self.feature_context,
+        )
         return {"supervised": supervised, "anomaly": anomaly}
 
     def _load_optional(self, filename: str) -> Any | None:
@@ -66,6 +87,12 @@ class PredictionEngine:
         if not path.exists():
             return None
         return load_joblib(path)
+
+    def _load_probability_calibration(self) -> dict[str, Any]:
+        path = self.model_dir / "fraud_probability_calibration.json"
+        if not path.exists():
+            return {}
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def _load_first_available(self, filenames: list[str]) -> Any | None:
         for filename in filenames:

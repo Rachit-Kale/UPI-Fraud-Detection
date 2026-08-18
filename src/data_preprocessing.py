@@ -240,10 +240,15 @@ def _combine_feature_blocks(blocks: list[np.ndarray]) -> np.ndarray:
 
 
 def remove_duplicates(df: pd.DataFrame) -> pd.DataFrame:
-    """Remove duplicate transactions."""
+    """Validate transaction identity without silently dropping records."""
     if "transaction_id" in df.columns:
-        return df.drop_duplicates(subset=["transaction_id"]).reset_index(drop=True)
-    return df.drop_duplicates().reset_index(drop=True)
+        duplicate_count = int(df["transaction_id"].duplicated().sum())
+        if duplicate_count:
+            raise ValueError(
+                f"Found {duplicate_count} duplicate transaction IDs during preprocessing."
+            )
+        return df.reset_index(drop=True)
+    return df.reset_index(drop=True)
 
 
 def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:

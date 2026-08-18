@@ -52,6 +52,11 @@ def fuse_signals(
     if ambiguity_score >= 0.38 or disagreement >= 0.45:
         resolution = "AMBIGUOUS_REVIEW"
         resolution_text = "Falls within the ambiguous research-review band"
+    elif fraud_probability < 0.50 and fusion_score >= 0.60:
+        # Anomaly unusualness must not promote a below-threshold supervised
+        # result directly to fraud-likely; retain the disagreement as review.
+        resolution = "AMBIGUOUS_REVIEW"
+        resolution_text = "Unusual behaviour is present without a supervised fraud signal"
     elif fusion_score >= 0.60:
         resolution = "FRAUD_LIKELY"
         resolution_text = "Fraud signal is elevated across the combined evidence"
@@ -64,6 +69,7 @@ def fuse_signals(
         "fraud_likely_fusion_threshold": 0.60,
         "ambiguous_score_threshold": 0.38,
         "ambiguous_disagreement_threshold": 0.45,
+        "fraud_likely_requires_supervised_threshold": 0.50,
     }
 
     return {

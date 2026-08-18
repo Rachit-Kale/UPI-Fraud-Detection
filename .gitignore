@@ -24,6 +24,7 @@ models/*.pkl
 reports/*.png
 reports/*.json
 data/merged/*.csv
+data/merged/mapped_common_schema.parquet
 data/processed/*.csv
 data/raw/*.csv
 data/processed/*.parquet

@@ -13,7 +13,110 @@ RAPID_TRANSACTION_WINDOW_MINUTES = 5
 LOGGER = get_logger(__name__)
 
 
-def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
+def build_feature_context(df: pd.DataFrame) -> dict[str, object]:
+    """Build historical aggregates used when scoring a single transaction.
+
+    Training feature engineering operates on batches. A manual UI transaction
+    has only one row, so calculating sender history from that row would create
+    misleading values such as ``transaction_frequency=1``. This compact
+    context keeps the reference aggregates from the preprocessing fit sample
+    and is reused consistently for one-row inference.
+    """
+    working = df.copy()
+    working["timestamp"] = safe_datetime(working["timestamp"])
+    working["amount"] = pd.to_numeric(working["amount"], errors="coerce").fillna(0.0)
+    working["hour_of_day"] = working["timestamp"].dt.hour.fillna(0).astype(int)
+    working["sender_id"] = working["sender_id"].astype(str)
+    working["receiver_id"] = working["receiver_id"].astype(str)
+    working["device_type"] = working["device_type"].astype(str)
+    working["merchant_category"] = working["merchant_category"].astype(str)
+    working["location"] = working["location"].astype(str)
+
+    grouped = working.groupby("sender_id", sort=False, dropna=False)
+    sender_stats: dict[str, dict[str, object]] = {}
+    for sender, group in grouped:
+        amounts = group["amount"].to_numpy(dtype=np.float64)
+        sender_stats[str(sender)] = {
+            "average_amount": float(np.mean(amounts)) if amounts.size else 0.0,
+            "amount_std": float(np.std(amounts)) if amounts.size > 1 else 0.0,
+            "transaction_frequency": int(len(group)),
+            "merchant_diversity": int(group["merchant_category"].nunique()),
+            "device_switching_frequency": int(group["device_type"].nunique()),
+            "usual_location": str(group["location"].mode().iloc[0]) if not group["location"].mode().empty else "Unknown",
+            "hours": group["hour_of_day"].value_counts().astype(int).to_dict(),
+        }
+
+    pairs = set(
+        zip(
+            working["sender_id"].astype(str),
+            working["receiver_id"].astype(str),
+        )
+    )
+    hourly_counts = working.groupby(["sender_id", "hour_of_day"], sort=False).size()
+    hourly_values = hourly_counts.to_numpy(dtype=np.float64)
+    return {
+        "sender_stats": sender_stats,
+        "known_sender_receiver_pairs": pairs,
+        "global_amount_mean": float(working["amount"].mean()) if len(working) else 0.0,
+        "global_hourly_frequency_p95": float(np.quantile(hourly_values, 0.95)) if hourly_values.size else 1.0,
+    }
+
+
+def _apply_feature_context(df: pd.DataFrame, context: dict[str, object]) -> pd.DataFrame:
+    """Replace one-row behavioural defaults with reference-history values."""
+    enriched = df.copy()
+    sender_stats = context.get("sender_stats", {})
+    global_mean = float(context.get("global_amount_mean", 0.0))
+    hourly_p95 = float(context.get("global_hourly_frequency_p95", 1.0))
+    known_pairs = context.get("known_sender_receiver_pairs", set())
+
+    averages = []
+    frequencies = []
+    merchant_diversity = []
+    device_switching = []
+    hourly_counts = []
+    amount_spikes = []
+    unusual_locations = []
+    new_payees = []
+    for row in enriched.itertuples(index=False):
+        sender = str(row.sender_id)
+        receiver = str(row.receiver_id)
+        stats = sender_stats.get(sender, {})
+        average = float(stats.get("average_amount", global_mean))
+        std = float(stats.get("amount_std", 0.0))
+        frequency = int(stats.get("transaction_frequency", 0))
+        hour_counts = stats.get("hours", {})
+        current_hour_count = int(hour_counts.get(int(row.hour_of_day), 0))
+        usual_location = str(stats.get("usual_location", "Unknown"))
+
+        averages.append(average)
+        frequencies.append(frequency)
+        merchant_diversity.append(int(stats.get("merchant_diversity", 0)))
+        device_switching.append(int(stats.get("device_switching_frequency", 0)))
+        hourly_counts.append(current_hour_count)
+        amount_spikes.append(int(float(row.amount) > average + (3.0 * std) if frequency > 1 else 0))
+        unusual_locations.append(int(frequency > 0 and str(row.location) != usual_location))
+        new_payees.append(int((sender, receiver) not in known_pairs))
+
+    enriched["avg_transaction_amount"] = np.asarray(averages, dtype="float32")
+    enriched["transaction_frequency"] = np.asarray(frequencies, dtype="int32")
+    enriched["merchant_diversity"] = np.asarray(merchant_diversity, dtype="int16")
+    enriched["device_switching_frequency"] = np.asarray(device_switching, dtype="int16")
+    enriched["transactions_per_hour"] = np.asarray(hourly_counts, dtype="int16")
+    enriched["amount_spike"] = np.asarray(amount_spikes, dtype="int8")
+    enriched["high_frequency_payments"] = (
+        enriched["transactions_per_hour"] >= max(2.0, hourly_p95)
+    ).astype("int8")
+    enriched["new_payee_flag"] = np.asarray(new_payees, dtype="int8")
+    enriched["unusual_location_flag"] = np.asarray(unusual_locations, dtype="int8")
+    enriched["rapid_transactions"] = (
+        enriched["minutes_since_previous_sender_txn"].notna()
+        & (enriched["minutes_since_previous_sender_txn"] <= RAPID_TRANSACTION_WINDOW_MINUTES)
+    ).astype("int8")
+    return enriched
+
+
+def engineer_features(df: pd.DataFrame, context: dict[str, object] | None = None) -> pd.DataFrame:
     """Generate behavioral, velocity, risk, and temporal features."""
     LOGGER.info("Starting feature engineering on %s rows", len(df))
     validate_common_schema(df)
@@ -35,6 +138,8 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     features = add_velocity_features(features)
     LOGGER.info("Adding risk features")
     features = add_risk_features(features)
+    if context is not None:
+        features = _apply_feature_context(features, context)
     LOGGER.info("Feature engineering complete with %s columns", len(features.columns))
     return features
 

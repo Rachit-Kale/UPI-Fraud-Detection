@@ -19,7 +19,8 @@ The stages are:
 2. The mapped rows are written to `data/merged/mapped_common_schema.parquet` with Snappy compression.
 3. A bounded sample is used to fit preprocessing state once.
 4. Every Parquet row group is feature-engineered and transformed using that same fitted state.
-5. The existing batch-only ML models train once on bounded samples.
+5. The existing batch-only ML models train once on bounded samples selected from
+   the lossless processed Parquet output.
 
 The transformed output is written to:
 
@@ -64,11 +65,18 @@ chunks and a reproducible bounded sample is passed to each existing batch model.
 Adjust those sample limits when needed:
 
 ```powershell
-python main.py --all --supervised-rows 700000 --anomaly-rows 200000
+python main.py --all --supervised-rows 700000 --legitimate-ratio 3 --anomaly-rows 200000
 ```
 
-Supervised sampling is class-balanced when both labels exist. Anomaly sampling is
-also bounded and preserves the existing anomaly training function and algorithms.
+Supervised sampling preserves every fraud row when the row budget allows it, then
+selects legitimate rows at the configured ratio. Legitimate rows are sampled
+proportionally across available hour/day strata. Random Forest keeps
+`class_weight="balanced"` and XGBoost keeps its calculated `scale_pos_weight`.
+The default legitimate ratio is 3:1 and can be changed with
+`--legitimate-ratio 5`.
+
+Anomaly sampling is uniform and label-independent because fraud labels should not
+rebalance an unsupervised detector.
 
 ## Parquet behavior
 
@@ -77,8 +85,9 @@ also bounded and preserves the existing anomaly training function and algorithms
   schema mapping are read.
 - Parquet writes use Snappy compression and one row group per processing chunk.
 - The API analytics endpoint reads only the columns required for its reports.
-- Generated transaction IDs use a source offset, so chunk boundaries do not create
-  duplicate IDs for datasets without an ID column.
+- Generated transaction IDs include the source, original identifier context, and
+  deterministic row offset, so chunk boundaries and cross-dataset overlaps do not
+  create duplicate IDs.
 
 ## Correctness and memory checks
 
@@ -92,7 +101,10 @@ python -c "import pyarrow.parquet as pq; p=pq.ParquetFile('data/merged/mapped_co
 
 The sum of row-group counts should equal the mapped row count in
 `reports/schema_reports.json`. The processed Parquet file should have the same row
-count after the existing duplicate-removal behavior is applied within each processing chunk.
+count as the mapped Parquet file. Duplicate IDs now stop the pipeline instead of
+being silently removed. Row accounting is written to
+`reports/pipeline_row_counts.json` with `rows_read`, `rows_removed`, and
+`rows_written` for mapped and processed stages.
 
 For a quick read test:
 

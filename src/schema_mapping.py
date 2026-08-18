@@ -242,6 +242,7 @@ def map_dataset_schema(
                 len(df),
                 source_prefix,
                 id_offset=id_offset,
+                index=df.index,
             )
 
     mapped = _apply_dataset_specific_mapping(
@@ -252,6 +253,11 @@ def map_dataset_schema(
         id_offset=id_offset,
     )
     mapped = _clean_common_schema(mapped)
+    mapped["transaction_id"] = _make_unique_transaction_ids(
+        mapped["transaction_id"],
+        source_prefix=source_prefix,
+        row_offset=id_offset,
+    )
     validate_common_schema(mapped, source_name=source_prefix)
     return mapped
 
@@ -281,6 +287,12 @@ def validate_common_schema(df: pd.DataFrame, source_name: str | None = None) -> 
         )
     if not set(df["fraud_label"].dropna().unique()).issubset({0, 1}):
         raise ValueError("fraud_label must contain binary values 0 and 1.")
+    if df["transaction_id"].duplicated().any():
+        source_text = f" for {source_name}" if source_name else ""
+        duplicate_count = int(df["transaction_id"].duplicated().sum())
+        raise ValueError(
+            f"The mapped dataframe{source_text} contains {duplicate_count} duplicate transaction IDs."
+        )
 
 
 def _default_column_value(
@@ -288,16 +300,18 @@ def _default_column_value(
     length: int,
     source_prefix: str,
     id_offset: int = 0,
+    index: pd.Index | None = None,
 ) -> object:
+    series_index = index if index is not None else range(length)
     if column == "transaction_id":
-        return make_transaction_ids(source_prefix, length, start=id_offset)
+        return make_transaction_ids(source_prefix, length, start=id_offset).set_axis(series_index)
     if column == "timestamp":
-        return pd.Series(pd.NaT, index=range(length))
+        return pd.Series(pd.NaT, index=series_index)
     if column == "amount":
-        return pd.Series(np.nan, index=range(length))
+        return pd.Series(np.nan, index=series_index)
     if column == "fraud_label":
-        return pd.Series(0, index=range(length))
-    return pd.Series("Unknown", index=range(length))
+        return pd.Series(0, index=series_index)
+    return pd.Series("Unknown", index=series_index)
 
 
 def _apply_dataset_specific_mapping(
@@ -378,3 +392,25 @@ def _clean_common_schema(df: pd.DataFrame) -> pd.DataFrame:
     cleaned["fraud_label"] = pd.to_numeric(cleaned["fraud_label"], errors="coerce").fillna(0)
     cleaned["fraud_label"] = cleaned["fraud_label"].astype(int).clip(0, 1)
     return cleaned
+
+
+def _make_unique_transaction_ids(
+    values: pd.Series,
+    source_prefix: str,
+    row_offset: int,
+) -> pd.Series:
+    """Create stable globally unique IDs while retaining the raw ID as context."""
+    raw_values = values.astype("string").fillna("unknown")
+    raw_values = raw_values.str.strip()
+    raw_values = raw_values.mask(raw_values.str.lower().isin(["", "nan", "none", "nat"]), "unknown")
+    row_numbers = pd.Series(
+        np.arange(row_offset, row_offset + len(values), dtype=np.int64),
+        index=values.index,
+    )
+    return (
+        source_prefix
+        + "__"
+        + raw_values.astype(str)
+        + "__row_"
+        + row_numbers.astype(str).str.zfill(8)
+    )

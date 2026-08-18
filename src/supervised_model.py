@@ -44,6 +44,7 @@ def train_supervised_models(
     test_size: float = 0.2,
     random_state: int = 42,
     max_rows: int = 500_000,
+    legitimate_ratio: float = 3.0,
     preprocessor: UPITransactionPreprocessor | None = None,
     preprocessed: bool = False,
 ) -> dict[str, Any]:
@@ -57,6 +58,7 @@ def train_supervised_models(
         df,
         max_rows=max_rows,
         random_state=random_state,
+        legitimate_ratio=legitimate_ratio,
     )
     LOGGER.info("Supervised training dataset size: %s rows", len(training_df))
     if preprocessed:
@@ -142,17 +144,23 @@ def sample_training_data(
     df: pd.DataFrame,
     max_rows: int,
     random_state: int,
+    legitimate_ratio: float = 3.0,
 ) -> pd.DataFrame:
-    """Use a research-friendly sample size for model training on very large datasets."""
+    """Preserve fraud and stratify the legitimate majority for training."""
     if "fraud_label" in df.columns and df["fraud_label"].nunique() > 1:
         sampled = balanced_binary_sample(
             df,
             target_column="fraud_label",
             max_rows=max_rows,
             random_state=random_state,
+            legitimate_ratio=legitimate_ratio,
         )
         counts = sampled["fraud_label"].value_counts().to_dict()
-        LOGGER.info("Balanced supervised sample class counts: %s", counts)
+        LOGGER.info(
+            "Fraud-preserving supervised sample class counts: %s, legitimate_ratio=%.2f",
+            counts,
+            legitimate_ratio,
+        )
         return sampled
     return df.sample(n=min(max_rows, len(df)), random_state=random_state, replace=False).reset_index(drop=True)
 
@@ -174,9 +182,14 @@ def evaluate_classifier(
     }
 
 
-def predict_fraud_probability(model: Any, preprocessor: UPITransactionPreprocessor, df: pd.DataFrame) -> pd.DataFrame:
+def predict_fraud_probability(
+    model: Any,
+    preprocessor: UPITransactionPreprocessor,
+    df: pd.DataFrame,
+    feature_context: dict[str, object] | None = None,
+) -> pd.DataFrame:
     """Generate fraud probability and binary prediction for new transactions."""
-    engineered = engineer_features(df)
+    engineered = engineer_features(df, context=feature_context)
     x = preprocessor.transform(engineered)
     probability = model.predict_proba(x)[:, 1]
     output = df[["transaction_id"]].copy()

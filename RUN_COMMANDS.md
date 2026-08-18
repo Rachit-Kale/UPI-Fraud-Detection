@@ -89,7 +89,7 @@ The process is batch-based and may take time because it scans millions of record
 This command keeps the default chunk size at 100,000 rows and uses bounded training samples:
 
 ```powershell
-python main.py --all --chunk-size 100000 --fit-rows 100000 --supervised-rows 500000 --anomaly-rows 200000
+python main.py --all --chunk-size 100000 --fit-rows 100000 --supervised-rows 500000 --legitimate-ratio 3 --anomaly-rows 200000
 ```
 
 Use this first to verify the complete project. Increase the training row limits later if your machine has enough memory and time.
@@ -112,6 +112,10 @@ python main.py --all --fit-rows 200000 --supervised-rows 700000 --anomaly-rows 3
 ```
 
 These limits do not delete records from Parquet. They only bound the samples materialized for state fitting and batch model training.
+
+For supervised training, `--legitimate-ratio 3` keeps all available fraud rows when possible and selects approximately three legitimate rows per fraud row. Legitimate rows are selected proportionally across available hour/day strata. Random Forest and XGBoost also retain class weighting.
+
+For anomaly training, the sampler is uniform and does not use fraud labels because anomaly detection is unsupervised.
 
 ## 8. Run Individual Stages
 
@@ -138,7 +142,7 @@ python main.py --features --chunk-size 100000 --fit-rows 100000
 Train supervised models:
 
 ```powershell
-python main.py --train-supervised --supervised-rows 500000
+python main.py --train-supervised --supervised-rows 500000 --legitimate-ratio 3
 ```
 
 Train anomaly models:
@@ -174,7 +178,7 @@ Get-ChildItem ./models
 Get-ChildItem ./reports
 ```
 
-The mapped and processed row counts should match apart from rows removed by the existing validation and missing-label rules. The Parquet row-group count should be greater than one for a large dataset.
+The mapped and processed row counts should match. Duplicate transaction IDs now stop the pipeline instead of being silently removed. Detailed row accounting is saved to `reports/pipeline_row_counts.json`.
 
 ## 10. Start the FastAPI Backend
 
@@ -258,7 +262,7 @@ python main.py --all
 Missing model files or HTTP 500 from the prediction endpoint:
 
 ```powershell
-python main.py --all --chunk-size 100000 --fit-rows 100000 --supervised-rows 500000 --anomaly-rows 200000
+python main.py --all --chunk-size 100000 --fit-rows 100000 --supervised-rows 500000 --legitimate-ratio 3 --anomaly-rows 200000
 ```
 
 API connection error in React:
