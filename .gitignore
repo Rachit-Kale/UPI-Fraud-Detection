@@ -45,3 +45,5 @@ yarn-error.log*
 .idea/
 .DS_Store
 Thumbs.db
+mapped_common_schema.parquet
+Datasets.zip

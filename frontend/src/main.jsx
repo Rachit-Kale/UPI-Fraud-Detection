@@ -28,7 +28,7 @@ import {
 } from "lucide-react";
 import "./styles.css";
 
-const API_BASE = "/api";
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 
 const defaultForm = {
   amount: 650,
@@ -364,7 +364,7 @@ function StatusPanel({ status }) {
       <ShieldCheck size={24} />
       <div className={`status-content ${!ready ? "missing" : ""}`}>
         <span>Model Status</span>
-        <strong>{ready ? "Ready for Phase 1 testing" : "Training artifacts missing"}</strong>
+        <strong>{ready ? "Ready for Final testing" : "Training artifacts missing"}</strong>
       </div>
       <div className="artifact-dots">
         {Object.entries(status?.artifacts || {}).map(([key, value]) => (
